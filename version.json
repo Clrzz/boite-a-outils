@@ -1,6 +1,6 @@
 {
-  "version": "2.0.6",
+  "version": "2.0.7",
   "plugin": "1.2.2",
-  "notes": "Redémarrage après mise à jour plus fiable + carnet de bord (journal.txt) pour diagnostiquer.",
-  "sha256": "22a58248d6daef9185ffddcb8cbfe6c1b74ed2a6f3e297bed8a28bd704193d50"
+  "notes": "Les profils ne touchent plus au volume du casque.",
+  "sha256": "e50bc88be22a090bc999ec0fdd9437185f89112a39b82a36ac2a3f14ee05fd0d"
 }

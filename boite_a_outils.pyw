@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.6"
+VERSION = "2.0.7"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -2857,13 +2857,17 @@ def afficher_rapport(self):
 # =============================================================
 
 PROFILS_DEFAUT = {
-    "Jeu":     {"icone": "🎮", "plan": "SCHEME_MIN", "fermer": ["OneDrive.exe"], "ouvrir": ["Discord", "steam://open/main"], "volume": 80},
-    "Travail": {"icone": "💼", "plan": "SCHEME_BALANCED", "fermer": [], "ouvrir": [], "volume": 50},
-    "Silence": {"icone": "🌙", "plan": "SCHEME_MAX", "fermer": ["Steam.exe"], "ouvrir": [], "volume": 15},
+    "Jeu":     {"icone": "🎮", "plan": "SCHEME_MIN", "fermer": ["OneDrive.exe"], "ouvrir": ["Discord", "steam://open/main"], "volume": None},
+    "Travail": {"icone": "💼", "plan": "SCHEME_BALANCED", "fermer": [], "ouvrir": [], "volume": None},
+    "Silence": {"icone": "🌙", "plan": "SCHEME_MAX", "fermer": ["Steam.exe"], "ouvrir": [], "volume": None},
 }
 NOMS_PLANS = {"SCHEME_MIN": "Performances", "SCHEME_BALANCED": "Utilisation normale", "SCHEME_MAX": "Économie d'énergie"}
 REGLAGES_DEFAUT["profils"] = PROFILS_DEFAUT
 REGLAGES.setdefault("profils", json.loads(json.dumps(PROFILS_DEFAUT)))
+if not REGLAGES.get("profils_sans_volume"):   # v2.0.7 : les profils ne touchent plus au son du casque (demande de Crz)
+    for _p in REGLAGES["profils"].values():
+        _p["volume"] = None
+    REGLAGES["profils_sans_volume"] = True
 
 
 def regler_volume(pourcentage):
@@ -2931,7 +2935,7 @@ def onglet_profils(self, cadre):
         champs = {"plan": plan}
         for col, cle, larg in ((2, "fermer", 18), (3, "ouvrir", 22), (4, "volume", 5)):
             e = tk.Entry(edition, bg=FOND, fg=TEXTE, insertbackground=TEXTE, relief="flat", font=("Segoe UI", 10), width=larg)
-            v = p.get(cle, "")
+            v = p.get(cle) or ""
             e.insert(0, ", ".join(v) if isinstance(v, list) else str(v))
             e.grid(row=ligne, column=col, padx=4, ipady=3)
             champs[cle] = e
@@ -2957,7 +2961,8 @@ def dessiner_profils(self):
             resume.append("ferme " + ", ".join(p["fermer"]))
         if p.get("ouvrir"):
             resume.append("ouvre " + ", ".join(a.split("://")[0] if "://" in a else Path(a).stem for a in p["ouvrir"]))
-        resume.append(f"volume {p.get('volume', '--')} %")
+        if p.get("volume") is not None:
+            resume.append(f"volume {p['volume']} %")
         tk.Label(c, text="\n".join(resume), bg=FOND, fg=GRIS, font=("Segoe UI", 9), anchor="w", justify="left",
                  wraplength=220).pack(fill="x", pady=(4, 8))
         tk.Button(c, text="✓ Actif" if nom == actif else "Activer", relief="flat", bg=couleur, fg=texte_sur(couleur),
