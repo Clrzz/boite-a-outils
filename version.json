@@ -1,6 +1,6 @@
 {
-  "version": "2.0.9",
+  "version": "2.0.10",
   "plugin": "1.2.2",
-  "notes": "La copie de secours de l'ancienne version est rangée dans le dossier BoiteAOutils, plus sur le Bureau.",
-  "sha256": "b3c1d67c48e1f4a73f4e31e81efe483de4c40a30f57cb73305f722c967b1232d"
+  "notes": "La copie de secours n'encombre plus le Bureau (rangée dans le dossier BoiteAOutils).",
+  "sha256": "e838f49fc461c8e41343bb12c186fbdca7698294bb31a2a83d4eac7a08275fde"
 }

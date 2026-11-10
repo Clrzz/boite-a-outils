@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.9"
+VERSION = "2.0.10"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -3799,6 +3799,13 @@ if __name__ == "__main__":
         except (OSError, ValueError):
             pass   # personne ne répond : on démarre normalement
     journal(f"Démarrage {sys.argv[1:]} depuis {Path(__file__).resolve()}")
+    try:   # range la copie de secours laissée sur le Bureau par les anciennes versions
+        vieille = Path(__file__).resolve().with_name(Path(__file__).name + ".ancienne")
+        if vieille.exists():
+            DOSSIER_APPLI.mkdir(exist_ok=True)
+            os.replace(vieille, DOSSIER_APPLI / vieille.name)
+    except OSError:
+        pass
     try:
         charger_reglages()
         try:   # pour que Windows montre le logo de l'appli (et pas la plume Python) dans la barre des tâches
