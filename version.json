@@ -1,6 +1,6 @@
 {
-  "version": "2.0.7",
+  "version": "2.0.8",
   "plugin": "1.2.2",
-  "notes": "Les profils ne touchent plus au volume du casque.",
-  "sha256": "e50bc88be22a090bc999ec0fdd9437185f89112a39b82a36ac2a3f14ee05fd0d"
+  "notes": "Le logo de l'appli s'affiche dans la fenêtre, la barre des tâches et près de l'horloge.",
+  "sha256": "45be15bdcb42d5fe60bde700f54930d276ec5802ab01e6238ab8fca53a6d2e8a"
 }

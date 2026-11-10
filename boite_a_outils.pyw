@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.7"
+VERSION = "2.0.8"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -1056,6 +1056,11 @@ class BoiteAOutils:
         self.file_icone = queue.Queue()   # messages venant de l'icône (autre "fil")
         self.session = None               # infos de la session gaming en cours
         racine.title("Boîte à outils de Crz")
+        if (DOSSIER_APPLI / "icone.ico").exists():   # logo de l'appli (fenêtre + barre des tâches)
+            try:
+                racine.iconbitmap(default=str(DOSSIER_APPLI / "icone.ico"))
+            except tk.TclError:
+                pass
         racine.geometry("1080x720")
         racine.minsize(980, 660)
         racine.configure(bg=FOND)
@@ -1149,12 +1154,14 @@ class BoiteAOutils:
             import pystray
             from PIL import Image, ImageDraw
 
-        # On dessine l'icône : une petite caisse à outils bleue
-        image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-        d = ImageDraw.Draw(image)
-        d.rounded_rectangle([4, 20, 60, 58], radius=8, fill=ACCENT)
-        d.rounded_rectangle([22, 8, 42, 24], radius=5, outline=ACCENT, width=5)
-        d.rectangle([4, 34, 60, 38], fill=FOND)
+        try:   # le logo de l'appli s'il existe
+            image = Image.open(DOSSIER_APPLI / "logo.png").convert("RGBA").resize((64, 64))
+        except Exception:   # sinon on dessine une petite caisse à outils bleue
+            image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            d = ImageDraw.Draw(image)
+            d.rounded_rectangle([4, 20, 60, 58], radius=8, fill=ACCENT)
+            d.rounded_rectangle([22, 8, 42, 24], radius=5, outline=ACCENT, width=5)
+            d.rectangle([4, 34, 60, 38], fill=FOND)
 
         envoyer = self.file_icone.put   # l'icône tourne dans un autre fil : elle passe par la file
         menu = pystray.Menu(
@@ -3787,6 +3794,11 @@ if __name__ == "__main__":
     journal(f"Démarrage {sys.argv[1:]} depuis {Path(__file__).resolve()}")
     try:
         charger_reglages()
+        try:   # pour que Windows montre le logo de l'appli (et pas la plume Python) dans la barre des tâches
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Crz.BoiteAOutils")
+        except (AttributeError, OSError):
+            pass
         racine = tk.Tk()
         racine.report_callback_exception = lambda *e: journal("Erreur : " + "".join(__import__("traceback").format_exception(*e)))
         BoiteAOutils(racine, cache="--cache" in sys.argv)
