@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.5"
+VERSION = "2.0.6"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -543,6 +543,19 @@ def lecteurs_fixes():
 #  Le fichier version.json du dépôt dit quelle est la dernière version.
 #  Si elle est plus récente, on télécharge le nouveau .pyw, on vérifie
 #  qu'il est complet et sans faute, puis on remplace celui-ci et on redémarre.
+
+def journal(texte):
+    """Petit carnet de bord (~/BoiteAOutils/journal.txt) pour comprendre un problème après coup."""
+    try:
+        DOSSIER_APPLI.mkdir(parents=True, exist_ok=True)
+        fichier = DOSSIER_APPLI / "journal.txt"
+        if fichier.exists() and fichier.stat().st_size > 200_000:
+            fichier.write_text("", encoding="utf-8")
+        with open(fichier, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + f"[v{VERSION} pid {os.getpid()}] " + texte + "\n")
+    except OSError:
+        pass
+
 
 def numero_version(texte):
     return tuple(int(n) for n in re.findall(r"\d+", str(texte)))
@@ -3405,7 +3418,13 @@ def lancer_maj_appli(self, sans_question=False):
         arguments = [sys.executable, str(Path(__file__).resolve()), "--apres-maj"]
         if self.racine.state() == "withdrawn":
             arguments.append("--cache")
-        subprocess.Popen(arguments, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        journal(f"Mise à jour installée (v{infos['version']}), redémarrage : {arguments}")
+        drapeaux = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        try:   # « breakaway » : la nouvelle version survit même si l'ancienne était dans un groupe de processus
+            subprocess.Popen(arguments, creationflags=drapeaux | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0),
+                             close_fds=True)
+        except OSError:
+            subprocess.Popen(arguments, creationflags=drapeaux, close_fds=True)
         self.quitter()
     self.en_fond(lambda: installer_maj(infos), ensuite)
 
@@ -3760,7 +3779,14 @@ if __name__ == "__main__":
             sys.exit(0)   # elle répond (version plus ancienne) : elle tourne déjà
         except (OSError, ValueError):
             pass   # personne ne répond : on démarre normalement
-    charger_reglages()
-    racine = tk.Tk()
-    BoiteAOutils(racine, cache="--cache" in sys.argv)
-    racine.mainloop()   # la fenêtre reste ouverte et attend tes clics
+    journal(f"Démarrage {sys.argv[1:]} depuis {Path(__file__).resolve()}")
+    try:
+        charger_reglages()
+        racine = tk.Tk()
+        racine.report_callback_exception = lambda *e: journal("Erreur : " + "".join(__import__("traceback").format_exception(*e)))
+        BoiteAOutils(racine, cache="--cache" in sys.argv)
+        racine.mainloop()   # la fenêtre reste ouverte et attend tes clics
+    except Exception:
+        journal("Plantage au démarrage :\n" + __import__("traceback").format_exc())
+        raise
+    journal("Fermeture")
