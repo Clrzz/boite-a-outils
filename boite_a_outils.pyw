@@ -16,6 +16,7 @@
 #  Tes réglages sont dans  C:\Users\<toi>\BoiteAOutils\reglages.json
 # =============================================================
 
+import base64
 import hashlib
 import json
 import os
@@ -55,7 +56,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.10"
+VERSION = "2.0.11"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -556,6 +557,32 @@ def journal(texte):
     except OSError:
         pass
 
+
+
+def reparer_raccourci():
+    """Si le raccourci « Boîte à outils » du Bureau pointe ailleurs (fichier déplacé), on le refait pointer ici."""
+    if sys.platform != "win32":
+        return
+    ici = str(Path(__file__).resolve())
+    lanceur = str(Path(sys.executable).with_name("pythonw.exe"))
+    script = (
+        "$b=[Environment]::GetFolderPath('Desktop');$l=Join-Path $b 'Boîte à outils.lnk';"
+        "if(Test-Path -LiteralPath $l){$s=(New-Object -ComObject WScript.Shell).CreateShortcut($l);"
+        f"$f='{ici}';$d=Split-Path $f;"
+        "if($s.TargetPath -like '*.pyw'){if($s.TargetPath -ne $f){$s.TargetPath=$f;$s.WorkingDirectory=$d;$s.Save();'repare'}}"
+        "elseif($s.Arguments.Trim([char]34) -ne $f){"
+        f"if(-not (Test-Path -LiteralPath $s.TargetPath)){{$s.TargetPath='{lanceur}'}};"
+        "$s.Arguments=[char]34+$f+[char]34;$s.WorkingDirectory=$d;$s.Save();'repare'}}"
+    )
+    try:
+        res = subprocess.run(["powershell", "-NoProfile", "-EncodedCommand",
+                              base64.b64encode(script.encode("utf-16-le")).decode()], capture_output=True, text=True,
+                             encoding=ENCODAGE, errors="replace", timeout=20,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if "repare" in (res.stdout or ""):
+            journal(f"Raccourci du Bureau réparé -> {ici}")
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 def numero_version(texte):
     return tuple(int(n) for n in re.findall(r"\d+", str(texte)))
@@ -3799,6 +3826,7 @@ if __name__ == "__main__":
         except (OSError, ValueError):
             pass   # personne ne répond : on démarre normalement
     journal(f"Démarrage {sys.argv[1:]} depuis {Path(__file__).resolve()}")
+    threading.Thread(target=reparer_raccourci, daemon=True).start()
     try:   # range la copie de secours laissée sur le Bureau par les anciennes versions
         vieille = Path(__file__).resolve().with_name(Path(__file__).name + ".ancienne")
         if vieille.exists():

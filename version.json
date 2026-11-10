@@ -1,6 +1,6 @@
 {
-  "version": "2.0.10",
+  "version": "2.0.11",
   "plugin": "1.2.2",
-  "notes": "La copie de secours n'encombre plus le Bureau (rangée dans le dossier BoiteAOutils).",
-  "sha256": "e838f49fc461c8e41343bb12c186fbdca7698294bb31a2a83d4eac7a08275fde"
+  "notes": "Si tu déplaces le fichier, le raccourci du Bureau se répare tout seul au prochain lancement.",
+  "sha256": "607d53300cea58fe28a5c1a995d9cd9ecaf01dd3595d9ed022734a881732d02c"
 }
