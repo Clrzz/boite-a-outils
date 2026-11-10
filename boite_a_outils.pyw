@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -2293,12 +2293,26 @@ def onglet_reglages(self, cadre):
     self.cases_reglages = {}
     for cle, titre in [("mode_performances", "Passer en mode Performances pendant les sessions gaming"),
                        ("fermer_vers_icone", "La croix range la fenêtre près de l'horloge (au lieu de quitter)"),
-                       ("demarrage_windows", "Lancer la boîte à outils au démarrage de Windows")]:
-        var = tk.BooleanVar(value=REGLAGES[cle])
+                       ("demarrage_windows", "Lancer la boîte à outils au démarrage de Windows"),
+                       ("maj_auto", "Installer les mises à jour toute seule au démarrage")]:
+        var = tk.BooleanVar(value=REGLAGES.get(cle, True))
         tk.Checkbutton(cadre, text=titre, variable=var, bg=CARTE, fg=TEXTE, selectcolor=FOND,
                        activebackground=CARTE, activeforeground=TEXTE, font=("Segoe UI", 10), anchor="w",
                        highlightthickness=0, bd=0).pack(fill="x", pady=1)
         self.cases_reglages[cle] = var
+    # Le micro que le bouton Micro coupe (utile avec Voicemeeter : choisis celui que Discord utilise)
+    ligne_micro = tk.Frame(cadre, bg=CARTE)
+    ligne_micro.pack(fill="x", pady=(8, 2))
+    tk.Label(ligne_micro, text="Micro coupé par le bouton Micro :", bg=CARTE, fg=GRIS, font=("Segoe UI", 10)).pack(side="left")
+    self.choix_micro = ttk.Combobox(ligne_micro, state="readonly", width=44, values=["Micro par défaut de Windows"])
+    self.choix_micro.set(REGLAGES.get("micro_nom") or "Micro par défaut de Windows")
+    self.choix_micro.pack(side="left", padx=8)
+    self.texte(cadre, "Avec Voicemeeter, choisis le même micro que le « Périphérique d'entrée » de Discord.", 9, GRIS)
+
+    def remplir_micros(micros):
+        if not isinstance(micros, Exception) and micros:
+            self.choix_micro.config(values=["Micro par défaut de Windows"] + [nom for nom, _ in micros])
+    self.en_fond(lister_micros, remplir_micros)
     self.bouton(cadre, "💾 Enregistrer", self.sauver_reglages, VERT)
     self.info_reglages = self.texte(cadre, "", 10, VERT)
 
@@ -2318,6 +2332,8 @@ def sauver_reglages(self):
             nouveaux[cle] = int(valeur)
     for cle, var in self.cases_reglages.items():
         nouveaux[cle] = var.get()
+    micro_choisi = self.choix_micro.get()
+    nouveaux["micro_nom"] = "" if micro_choisi.startswith("Micro par défaut") else micro_choisi
     try:
         if nouveaux["demarrage_windows"] != REGLAGES["demarrage_windows"] or nouveaux["demarrage_windows"]:
             regler_demarrage(nouveaux["demarrage_windows"])
@@ -3234,14 +3250,41 @@ def musique_en_cours():
     return None
 
 
+def lister_micros():
+    """Noms des micros (périphériques d'enregistrement) actifs : [(nom, id), ...]."""
+    try:
+        import comtypes
+        from pycaw.pycaw import AudioUtilities
+    except ImportError:
+        return []
+    comtypes.CoInitialize()
+    micros = []
+    for d in AudioUtilities.GetAllDevices():
+        try:
+            actif = "Active" in str(getattr(d, "state", "Active"))
+            if actif and d.id and d.id.startswith("{0.0.1.") and d.FriendlyName:   # {0.0.1.* = enregistrement
+                micros.append((d.FriendlyName, d.id))
+        except Exception:
+            pass
+    return sorted(micros)
+
+
 def volume_micro():
-    """L'objet qui contrôle le micro par défaut de Windows (ou None si pycaw manque)."""
+    """L'objet qui contrôle le micro choisi dans les Réglages (sinon celui par défaut de Windows)."""
     try:
         import comtypes
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
     except ImportError:
         return None
     comtypes.CoInitialize()   # obligatoire dans chaque « fil » qui parle au son de Windows
+    choisi = REGLAGES.get("micro_nom")
+    if choisi:
+        for nom, ident in lister_micros():
+            if nom == choisi:
+                from ctypes import POINTER, cast
+                appareil = AudioUtilities.GetDeviceEnumerator().GetDevice(ident)
+                interface = appareil.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
+                return cast(interface, POINTER(IAudioEndpointVolume))
     micro = AudioUtilities.GetMicrophone()
     if micro is None:
         return None

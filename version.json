@@ -1,6 +1,6 @@
 {
-  "version": "2.0.1",
+  "version": "2.0.2",
   "plugin": "1.2.2",
-  "notes": "Températures des disques sur le tableau de bord, Crosshair X retiré des jeux, graphique de 20 à 100 °C.",
-  "sha256": "02dbd0f4d36132c50406fb6660746725a0e053c526a599145039ecd1f0a90b02"
+  "notes": "Choix du micro coupé par le bouton Micro (Voicemeeter), températures des disques, Crosshair X retiré des jeux.",
+  "sha256": "b358bc23b419efbcb0e09b125195cc8d77f0a1324241e828f30dfad02b79b2e0"
 }
