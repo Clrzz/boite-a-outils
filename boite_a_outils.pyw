@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.2"
+VERSION = "2.0.3"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -1243,7 +1243,7 @@ class BoiteAOutils:
 
     def jauge(self, parent, couleur):
         """Une barre de progression fine (un Canvas) ; renvoie une fonction pour la remplir."""
-        c = tk.Canvas(parent, height=14, bg=CARTE, highlightthickness=0)
+        c = tk.Canvas(parent, height=14, width=1, bg=CARTE, highlightthickness=0)
         c.pack(fill="x", pady=(8, 0))
 
         def remplir(fraction, teinte=couleur):
@@ -1494,7 +1494,7 @@ class BoiteAOutils:
         self.legende_alerte.pack(side="right")
         tk.Label(tete, text="● GPU   ", bg=CARTE, fg=ROSE, font=("Segoe UI", 8, "bold")).pack(side="right")
         tk.Label(tete, text="● CPU   ", bg=CARTE, fg=CYAN, font=("Segoe UI", 8, "bold")).pack(side="right")
-        self.graphique = tk.Canvas(graph, bg=CARTE, height=170, highlightthickness=0)
+        self.graphique = tk.Canvas(graph, bg=CARTE, height=170, width=1, highlightthickness=0)
         self.graphique.pack(fill="both", expand=True, pady=(6, 0))
         self.graphique.bind("<Configure>", lambda e: self.dessiner_graphique())
         self.astuce_hwinfo = tk.Label(graph, text="", bg=CARTE, fg=ORANGE, font=("Segoe UI", 9), anchor="w",
@@ -1589,7 +1589,7 @@ class BoiteAOutils:
                              anchor="w").pack(side="left")
                     texte = tk.Label(l, text="", bg=CARTE, fg=GRIS, font=("Segoe UI", 9), width=17, anchor="e")
                     texte.pack(side="right")
-                    barre = tk.Canvas(l, height=8, bg=CARTE, highlightthickness=0)
+                    barre = tk.Canvas(l, height=8, width=1, bg=CARTE, highlightthickness=0)
                     barre.pack(side="left", fill="x", expand=True, padx=(2, 8))
                     self.lignes_disques[lettre] = (barre, texte)
                 barre, texte = self.lignes_disques[lettre]

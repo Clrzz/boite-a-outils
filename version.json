@@ -1,6 +1,6 @@
 {
-  "version": "2.0.2",
+  "version": "2.0.3",
   "plugin": "1.2.2",
-  "notes": "Choix du micro coupé par le bouton Micro (Voicemeeter), températures des disques, Crosshair X retiré des jeux.",
-  "sha256": "b358bc23b419efbcb0e09b125195cc8d77f0a1324241e828f30dfad02b79b2e0"
+  "notes": "Jauges du tableau de bord corrigées.",
+  "sha256": "8aeec24f5c6182607aa6910a62b8c524aeee1fab34329048e8d4c5ae528b4e00"
 }
