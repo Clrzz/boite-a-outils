@@ -1,6 +1,6 @@
 {
-  "version": "2.0.8",
+  "version": "2.0.9",
   "plugin": "1.2.2",
-  "notes": "Le logo de l'appli s'affiche dans la fenêtre, la barre des tâches et près de l'horloge.",
-  "sha256": "45be15bdcb42d5fe60bde700f54930d276ec5802ab01e6238ab8fca53a6d2e8a"
+  "notes": "La copie de secours de l'ancienne version est rangée dans le dossier BoiteAOutils, plus sur le Bureau.",
+  "sha256": "b3c1d67c48e1f4a73f4e31e81efe483de4c40a30f57cb73305f722c967b1232d"
 }

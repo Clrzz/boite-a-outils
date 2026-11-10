@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.8"
+VERSION = "2.0.9"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -588,7 +588,14 @@ def installer_maj(infos):
     except (SyntaxError, UnicodeDecodeError) as e:
         return f"la nouvelle version a un problème ({e})"
     ici = Path(__file__).resolve()
-    shutil.copy2(ici, ici.with_name(ici.name + ".ancienne"))   # copie de secours
+    DOSSIER_APPLI.mkdir(exist_ok=True)
+    shutil.copy2(ici, DOSSIER_APPLI / (ici.name + ".ancienne"))   # copie de secours, rangée hors du Bureau
+    vieille = ici.with_name(ici.name + ".ancienne")   # celle que les anciennes versions laissaient à côté du fichier
+    if vieille.exists():
+        try:
+            vieille.unlink()
+        except OSError:
+            pass
     temporaire = ici.with_name(ici.name + ".nouvelle")
     temporaire.write_bytes(code)
     os.replace(temporaire, ici)
