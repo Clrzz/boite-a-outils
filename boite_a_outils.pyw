@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.3"
+VERSION = "2.0.4"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -3649,6 +3649,9 @@ class ServeurLocal(http.server.BaseHTTPRequestHandler):
         elif quoi == "profil" and valeur in REGLAGES["profils"]:
             self.app.file_icone.put(("profil", valeur))   # la fenêtre s'en occupe (elle seule touche à l'affichage)
             self.repondre(200, {"ok": True})
+        elif quoi == "fenetre" and valeur == "montrer" and self.client_address[0] in ("127.0.0.1", "::1"):
+            self.app.file_icone.put("ouvrir")   # une 2e boîte à outils a été lancée : on montre la 1re
+            self.repondre(200, {"ok": True})
         elif quoi == "pc" and valeur in ("veille", "verrouiller", "eteindre", "redemarrer"):
             self.repondre(200, {"ok": True})
             action_pc(valeur)
@@ -3736,6 +3739,17 @@ for _nom, _fonction in list(globals().items()):
 if __name__ == "__main__":
     if "--apres-maj" in sys.argv:
         time.sleep(3)   # le temps que l'ancienne version se ferme
+    else:
+        # Déjà ouverte ? On montre sa fenêtre au lieu d'en lancer une deuxième.
+        try:
+            action = "rien" if "--cache" in sys.argv else "montrer"
+            requete = urllib.request.Request(f"http://127.0.0.1:{PORT_SERVEUR}/api/fenetre/{action}", method="POST")
+            urllib.request.urlopen(requete, timeout=2)
+            sys.exit(0)
+        except urllib.error.HTTPError:
+            sys.exit(0)   # elle répond (version plus ancienne) : elle tourne déjà
+        except (OSError, ValueError):
+            pass   # personne ne répond : on démarre normalement
     charger_reglages()
     racine = tk.Tk()
     BoiteAOutils(racine, cache="--cache" in sys.argv)

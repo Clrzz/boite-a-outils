@@ -1,6 +1,6 @@
 {
-  "version": "2.0.3",
+  "version": "2.0.4",
   "plugin": "1.2.2",
-  "notes": "Jauges du tableau de bord corrigées.",
-  "sha256": "8aeec24f5c6182607aa6910a62b8c524aeee1fab34329048e8d4c5ae528b4e00"
+  "notes": "Une seule boîte à outils à la fois : relancer le fichier ouvre la fenêtre déjà lancée.",
+  "sha256": "7d17c9a933cfc1028230f775345d85f8346c17d8edd2b36d50280a03754f4690"
 }
