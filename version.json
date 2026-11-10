@@ -1,6 +1,6 @@
 {
-  "version": "2.0.4",
+  "version": "2.0.5",
   "plugin": "1.2.2",
-  "notes": "Une seule boîte à outils à la fois : relancer le fichier ouvre la fenêtre déjà lancée.",
-  "sha256": "7d17c9a933cfc1028230f775345d85f8346c17d8edd2b36d50280a03754f4690"
+  "notes": "Bouton Micro fiable avec les casques sans fil (il coupe le volume du micro).",
+  "sha256": "a7ce713e0329e8892c9517c31381e65117a5415d8892401b4048b8a00d98698a"
 }

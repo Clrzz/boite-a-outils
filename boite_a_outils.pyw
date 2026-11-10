@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.4"
+VERSION = "2.0.5"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -3301,10 +3301,20 @@ def micro(action="etat"):
         v = volume_micro()
         if v is None:
             return None
-        coupe = bool(v.GetMute())
+        # Certains casques sans fil (HyperX...) ignorent le « muet » de Windows : on se fie au VOLUME du micro.
+        # Couper = volume à 0 (+ muet), réactiver = on remet le volume d'avant (et on enlève le muet).
+        volume = v.GetMasterVolumeLevelScalar()
+        coupe = volume < 0.01
         if action in ("basculer", "couper", "activer"):
             coupe = {"basculer": not coupe, "couper": True, "activer": False}[action]
-            v.SetMute(int(coupe), None)
+            if coupe:
+                REGLAGES["volume_micro_avant"] = round(volume, 3) if volume >= 0.01 else REGLAGES.get("volume_micro_avant", 1.0)
+                enregistrer_reglages()
+                v.SetMasterVolumeLevelScalar(0.0, None)
+                v.SetMute(1, None)
+            else:
+                v.SetMute(0, None)
+                v.SetMasterVolumeLevelScalar(float(REGLAGES.get("volume_micro_avant", 1.0)) if volume < 0.01 else volume, None)
         return coupe
     except Exception:
         return None
