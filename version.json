@@ -1,6 +1,6 @@
 {
-  "version": "2.0.0",
+  "version": "2.0.1",
   "plugin": "1.2.2",
-  "notes": "Nouveau tableau de bord + mises à jour automatiques.",
-  "sha256": "3241c9614d4d76fb73b8dfcba47b73f442cfe766e779d77a979aa1f6ec91cbbe"
+  "notes": "Températures des disques sur le tableau de bord, Crosshair X retiré des jeux, graphique de 20 à 100 °C.",
+  "sha256": "02dbd0f4d36132c50406fb6660746725a0e053c526a599145039ecd1f0a90b02"
 }

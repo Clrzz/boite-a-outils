@@ -55,7 +55,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -484,12 +484,46 @@ def lire_tout():
     return resultat
 
 
+MODELES_LECTEURS = {}
+
+
+def modeles_lecteurs():
+    """{lettre: nom du disque} via PowerShell (une seule fois), pour relier HWiNFO aux lettres."""
+    if MODELES_LECTEURS or sys.platform != "win32":
+        return MODELES_LECTEURS
+    commande = ("Get-Partition | Where-Object DriveLetter | ForEach-Object { \"$($_.DriveLetter)|$((Get-Disk "
+                "-Number $_.DiskNumber).FriendlyName)\" }")
+    try:
+        sortie = subprocess.run(["powershell", "-NoProfile", "-Command", commande], capture_output=True, text=True,
+                                encoding=ENCODAGE, errors="replace", timeout=20,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return MODELES_LECTEURS
+    for ligne in sortie.splitlines():
+        if "|" in ligne:
+            lettre, nom = ligne.strip().split("|", 1)
+            MODELES_LECTEURS[lettre.strip().upper()] = nom.strip()
+    return MODELES_LECTEURS
+
+
+def lettre_du_disque(modele):
+    """Trouve la lettre (C, D...) d'un disque à partir de son nom HWiNFO."""
+    mots = {m for m in re.findall(r"[a-z0-9]{4,}", modele.lower())}
+    meilleur, score = None, 0
+    for lettre, nom in MODELES_LECTEURS.items():
+        commun = len(mots & set(re.findall(r"[a-z0-9]{4,}", nom.lower())))
+        if commun > score:
+            meilleur, score = lettre, commun
+    return meilleur
+
+
 def lecteurs_fixes():
     """[(lettre, taille, libre), ...] pour chaque disque interne (C:, D:, E:...)."""
     lecteurs = []
     if sys.platform != "win32":
         u = shutil.disk_usage("/")
         return [("C", u.total, u.free)]
+    modeles_lecteurs()
     masque = ctypes.windll.kernel32.GetLogicalDrives()
     for i in range(26):
         if masque & (1 << i):
@@ -672,9 +706,13 @@ FICHIER_TEMPS = DOSSIER_APPLI / "temps_de_jeu.json"
 def charger_temps():
     """{"2026-11-09": {"Valheim": 3600, ...}, ...} en secondes."""
     try:
-        return json.loads(FICHIER_TEMPS.read_text(encoding="utf-8"))
+        temps = json.loads(FICHIER_TEMPS.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    for jour in temps.values():   # on retire les applis qui ne sont pas des jeux (Crosshair X...)
+        for jeu in [j for j in jour if any(mot.lower() in j.lower() for mot in PAS_DES_JEUX)]:
+            del jour[jeu]
+    return temps
 
 
 def duree_lisible(secondes):
@@ -1537,7 +1575,11 @@ class BoiteAOutils:
         def ensuite(lecteurs):
             if isinstance(lecteurs, Exception):
                 lecteurs = []
-            temps = {lettre: t for _, t, lettre in self.temps_disques if lettre}
+            temps = {}
+            for modele, t, lettre in self.temps_disques:
+                lettre = lettre or lettre_du_disque(modele)
+                if lettre:
+                    temps.setdefault(lettre, t)
             a_surveiller = 0
             for lettre, total, libre in lecteurs:
                 if lettre not in self.lignes_disques:
@@ -1674,13 +1716,13 @@ class BoiteAOutils:
         c = self.graphique
         c.delete("all")   # on efface et on redessine tout
         larg, haut = max(c.winfo_width(), 200), max(c.winfo_height(), 120)
-        gauche, droite, bas, mini, maxi = 34, max(c.winfo_width(), 200) - 8, haut - 20, 30, 100
+        gauche, droite, bas, mini, maxi = 34, max(c.winfo_width(), 200) - 8, haut - 20, 20, 100
 
         def y(temp):
             temp = min(max(temp, mini), maxi)
             return bas - (temp - mini) / (maxi - mini) * (bas - 8)
 
-        for t in (40, 60, 80, 100):   # lignes repères
+        for t in (20, 40, 60, 80, 100):   # lignes repères
             c.create_line(gauche, y(t), droite, y(t), fill="#16162a")
             c.create_text(gauche - 6, y(t), text=f"{t}°", fill=GRIS, anchor="e", font=("Segoe UI", 8))
         # ligne d'alerte en pointillés
