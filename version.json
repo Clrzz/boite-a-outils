@@ -1,6 +1,6 @@
 {
-  "version": "2.0.13",
-  "plugin": "1.4.1",
-  "notes": "Le micro coupé avec le bouton du casque est maintenant détecté (Stream Deck et tableau de bord).",
-  "sha256": "a512c68dc35344af14dcc8190e017aece0dd27272a0760fde007e3532d8b7f22"
+  "version": "2.0.14",
+  "plugin": "1.4.2",
+  "notes": "Plus de mini freeze : la carte graphique est lue directement par le pilote NVIDIA, sans relancer nvidia-smi toutes les 2 s (appli + plugin Stream Deck).",
+  "sha256": "61045e913758da75cf0ead1cf8cef143b916726179f384badac9774baf904fc5"
 }

@@ -56,7 +56,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.13"
+VERSION = "2.0.14"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -324,7 +324,56 @@ def supprimer(fichiers):
     return libere
 
 
+# Lecture du GPU directement par le pilote NVIDIA (nvml.dll), sans relancer nvidia-smi toutes les 2 s
+# (lancer nvidia-smi en boucle peut provoquer des petites saccades / mini freeze).
+_NVML = {"lib": None, "h": None, "ko": False}
+_NVML_VERROU = threading.Lock()
+
+
+def lire_gpu_nvml():
+    import ctypes
+    with _NVML_VERROU:
+        if _NVML["ko"]:
+            return None
+        if _NVML["h"] is None:
+            lib = None
+            for chemin in ("nvml.dll", r"C:\Program Files\NVIDIA Corporation\NVSMI\nvml.dll"):
+                try:
+                    lib = ctypes.WinDLL(chemin)
+                    break
+                except (OSError, AttributeError):
+                    pass
+            h = ctypes.c_void_p()
+            if lib is None or lib.nvmlInit_v2() != 0 or lib.nvmlDeviceGetHandleByIndex_v2(0, ctypes.byref(h)) != 0:
+                _NVML["ko"] = True
+                return None
+            _NVML["lib"], _NVML["h"] = lib, h
+    lib, h = _NVML["lib"], _NVML["h"]
+
+    class Utilisation(ctypes.Structure):
+        _fields_ = [("gpu", ctypes.c_uint), ("memoire", ctypes.c_uint)]
+
+    class Memoire(ctypes.Structure):
+        _fields_ = [("total", ctypes.c_ulonglong), ("libre", ctypes.c_ulonglong), ("utilisee", ctypes.c_ulonglong)]
+
+    temp, util, mem, watts = ctypes.c_uint(), Utilisation(), Memoire(), ctypes.c_uint()
+    if (lib.nvmlDeviceGetTemperature(h, 0, ctypes.byref(temp)) != 0
+            or lib.nvmlDeviceGetUtilizationRates(h, ctypes.byref(util)) != 0
+            or lib.nvmlDeviceGetMemoryInfo(h, ctypes.byref(mem)) != 0):
+        return None
+    if lib.nvmlDeviceGetPowerUsage(h, ctypes.byref(watts)) != 0:
+        watts.value = 0
+    return temp.value, util.gpu, round(mem.utilisee / 1048576), watts.value / 1000
+
+
 def lire_gpu():
+    if sys.platform == "win32":
+        try:
+            res = lire_gpu_nvml()
+            if res:
+                return res
+        except Exception:
+            pass
     try:
         sortie = subprocess.run(
             ["nvidia-smi",
