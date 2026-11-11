@@ -56,7 +56,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.11"
+VERSION = "2.0.12"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -3836,6 +3836,11 @@ if __name__ == "__main__":
         pass
     try:
         charger_reglages()
+        if REGLAGES.get("demarrage_windows"):   # garde le lancement au démarrage à jour si le fichier a bougé
+            try:
+                regler_demarrage(True)
+            except OSError:
+                pass
         try:   # pour que Windows montre le logo de l'appli (et pas la plume Python) dans la barre des tâches
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Crz.BoiteAOutils")
