@@ -1,6 +1,6 @@
 {
-  "version": "2.0.12",
+  "version": "2.0.13",
   "plugin": "1.4.1",
-  "notes": "Plugin Stream Deck 1.4.1 : design Néon sur fond noir + profil Perfs auto.",
-  "sha256": "6b99f0d36b666783f81b672a0b80543f8a436076d93f70bd11b289ddb6489978"
+  "notes": "Le micro coupé avec le bouton du casque est maintenant détecté (Stream Deck et tableau de bord).",
+  "sha256": "a512c68dc35344af14dcc8190e017aece0dd27272a0760fde007e3532d8b7f22"
 }

@@ -56,7 +56,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.12"
+VERSION = "2.0.13"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -3354,6 +3354,49 @@ def volume_micro():
     return cast(interface, POINTER(IAudioEndpointVolume))
 
 
+MICRO_SILENCE = {"depuis": None, "vu_son": False}   # pour deviner une coupure faite avec le bouton du casque
+
+
+def crete_micro():
+    """Niveau sonore max du micro sur ~0,3 s (0.0 pile = aucun signal : micro coupé par le casque). None si inconnu."""
+    try:
+        import time as _t
+        import comtypes
+        from ctypes import POINTER, cast
+        from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
+        comtypes.CoInitialize()
+        enum = AudioUtilities.GetDeviceEnumerator()
+        appareil = None
+        choisi = REGLAGES.get("micro_nom")
+        if choisi:
+            for nom, ident in lister_micros():
+                if nom == choisi:
+                    appareil = enum.GetDevice(ident)
+        if appareil is None:
+            appareil = enum.GetDefaultAudioEndpoint(1, 1)   # 1 = enregistrement, 1 = multimédia
+        m = cast(appareil.Activate(IAudioMeterInformation._iid_, comtypes.CLSCTX_ALL, None), POINTER(IAudioMeterInformation))
+        crete = 0.0
+        for _ in range(12):
+            crete = max(crete, m.GetPeakValue())
+            _t.sleep(0.025)
+        return crete
+    except Exception:
+        return None
+
+
+def coupe_par_le_casque():
+    """Le casque HyperX coupe le son sans prévenir Windows : on le devine quand le micro donne 0 pile pendant 2,5 s."""
+    crete = crete_micro()
+    if crete is None:
+        return False
+    if crete > 0:
+        MICRO_SILENCE["vu_son"] = True
+        MICRO_SILENCE["depuis"] = None
+        return False
+    MICRO_SILENCE["depuis"] = MICRO_SILENCE["depuis"] or time.time()
+    return MICRO_SILENCE["vu_son"] and time.time() - MICRO_SILENCE["depuis"] >= 2.5
+
+
 def micro(action="etat"):
     """action = "etat", "basculer", "couper" ou "activer". Renvoie True si le micro est coupé (None si inconnu)."""
     try:
@@ -3364,6 +3407,9 @@ def micro(action="etat"):
         # Couper = volume à 0 (+ muet), réactiver = on remet le volume d'avant (et on enlève le muet).
         volume = v.GetMasterVolumeLevelScalar()
         coupe = volume < 0.01
+        casque = False
+        if not coupe:
+            casque = coupe = coupe_par_le_casque()
         if action in ("basculer", "couper", "activer"):
             coupe = {"basculer": not coupe, "couper": True, "activer": False}[action]
             if coupe:
@@ -3372,8 +3418,12 @@ def micro(action="etat"):
                 v.SetMasterVolumeLevelScalar(0.0, None)
                 v.SetMute(1, None)
             else:
+                if casque:   # coupé avec le bouton du casque : muet puis plus muet, pour que le pilote HyperX le réactive aussi
+                    v.SetMute(1, None)
+                    time.sleep(0.3)
                 v.SetMute(0, None)
                 v.SetMasterVolumeLevelScalar(float(REGLAGES.get("volume_micro_avant", 1.0)) if volume < 0.01 else volume, None)
+            MICRO_SILENCE["depuis"] = None
         return coupe
     except Exception:
         return None
