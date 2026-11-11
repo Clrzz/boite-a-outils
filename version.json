@@ -1,6 +1,6 @@
 {
   "version": "2.0.12",
-  "plugin": "1.3.0",
-  "notes": "Le lancement au démarrage de Windows suit le fichier s'il est déplacé. Plugin Stream Deck 1.3 avec ton profil Perfs.",
+  "plugin": "1.4.0",
+  "notes": "Plugin Stream Deck 1.4 : nouveau design Néon (jauges rondes) + profil Perfs auto.",
   "sha256": "6b99f0d36b666783f81b672a0b80543f8a436076d93f70bd11b289ddb6489978"
 }
