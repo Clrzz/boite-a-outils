@@ -1,6 +1,6 @@
 {
   "version": "2.0.11",
-  "plugin": "1.2.2",
-  "notes": "Si tu déplaces le fichier, le raccourci du Bureau se répare tout seul au prochain lancement.",
+  "plugin": "1.3.0",
+  "notes": "Plugin Stream Deck 1.3 : ton profil Perfs s'affiche tout seul quand tu lances un jeu.",
   "sha256": "607d53300cea58fe28a5c1a995d9cd9ecaf01dd3595d9ed022734a881732d02c"
 }
