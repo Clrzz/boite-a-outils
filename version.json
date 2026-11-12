@@ -1,6 +1,6 @@
 {
-  "version": "2.0.15",
+  "version": "2.0.16",
   "plugin": "1.4.3",
-  "notes": "Températures aussi via LibreHardwareMonitor (gratuit, sans la limite de 12 h de HWiNFO).",
-  "sha256": "a50657d6d0853ae8ff9881604688f764d2e88ef291d73ac9046ae1321810bad9"
+  "notes": "Corrige la boîte à outils qui se fermait toute seule (bug dans la lecture du micro).",
+  "sha256": "7e82f557c0f5ad1f1153edd1d125510ce30bb641680c103b75a0e69f8727ab03"
 }
