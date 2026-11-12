@@ -43,6 +43,9 @@ import ctypes
 # de la console : sans ça, les accents font planter la lecture.
 ENCODAGE = "oem" if sys.platform == "win32" else "utf-8"
 
+# Le son de Windows (voir FilAudio plus bas) : ce réglage doit être posé avant tout le reste.
+sys.coinit_flags = 0
+
 
 # =============================================================
 #  RÉGLAGES
@@ -56,7 +59,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.15"
+VERSION = "2.0.16"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -669,6 +672,69 @@ def journal(texte):
     except OSError:
         pass
 
+FICHIER_EN_MARCHE = DOSSIER_APPLI / "en_marche.json"
+FICHIER_ARRETS = DOSSIER_APPLI / "arrets.json"
+_FICHIER_PLANTAGE = None   # doit rester ouvert tant que l'appli tourne
+
+
+def surveiller_plantages():
+    """Si Windows tue le programme d'un coup (plantage « natif »), Python n'a pas le temps d'écrire
+    dans le journal. Le module faulthandler, lui, y arrive : il note dans plantage.txt ce que
+    faisait chaque fil à ce moment-là. C'est ce fichier qu'on regarde pour comprendre."""
+    global _FICHIER_PLANTAGE
+    try:
+        import faulthandler
+        DOSSIER_APPLI.mkdir(parents=True, exist_ok=True)
+        chemin = DOSSIER_APPLI / "plantage.txt"
+        if chemin.exists() and chemin.stat().st_size > 300_000:   # trop gros : on ne garde que la fin
+            chemin.write_bytes(chemin.read_bytes()[-100_000:])
+        _FICHIER_PLANTAGE = open(chemin, "a", encoding="utf-8")
+        _FICHIER_PLANTAGE.write(f"\n===== Démarrage v{VERSION} le {time.strftime('%Y-%m-%d %H:%M:%S')} (pid {os.getpid()}) =====\n")
+        _FICHIER_PLANTAGE.flush()
+        faulthandler.enable(file=_FICHIER_PLANTAGE, all_threads=True)
+    except Exception as e:
+        journal(f"Surveillance des plantages impossible : {e}")
+
+
+def noter_demarrage():
+    """Laisse un petit mot « je tourne ». S'il est encore là au démarrage suivant, c'est que la boîte
+    s'est arrêtée sans passer par la sortie normale : on le note (journal + arrets.json)."""
+    try:
+        ancien = json.loads(FICHIER_EN_MARCHE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        ancien = None
+    if isinstance(ancien, dict):
+        trace = False
+        try:   # y a-t-il une trace de plantage écrite pendant cette session-là ?
+            texte = (DOSSIER_APPLI / "plantage.txt").read_text(encoding="utf-8", errors="replace")
+            trace = "exception" in texte.rsplit("===== Démarrage", 1)[-1]
+        except OSError:
+            pass
+        journal(f"⚠ La session précédente (v{ancien.get('version')}, lancée le {ancien.get('debut')}) s'est arrêtée "
+                "sans prévenir" + (" : détails dans plantage.txt" if trace else " (plantage, ou PC éteint d'un coup)"))
+        try:
+            arrets = json.loads(FICHIER_ARRETS.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            arrets = []
+        arrets.append({"debut": ancien.get("debut"), "vu": time.strftime("%Y-%m-%d %H:%M:%S"),
+                       "version": ancien.get("version"), "trace": trace})
+        try:
+            FICHIER_ARRETS.write_text(json.dumps(arrets[-30:], indent=1), encoding="utf-8")
+        except OSError:
+            pass
+    try:
+        DOSSIER_APPLI.mkdir(parents=True, exist_ok=True)
+        FICHIER_EN_MARCHE.write_text(json.dumps({"version": VERSION, "debut": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                                 "pid": os.getpid()}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def noter_arret_propre():
+    try:
+        FICHIER_EN_MARCHE.unlink()
+    except OSError:
+        pass
 
 
 def reparer_raccourci():
@@ -1272,6 +1338,7 @@ class BoiteAOutils:
         self.navigation = onglets
 
         racine.protocol("WM_DELETE_WINDOW", self.fermer)   # clic sur la croix
+        racine.protocol("WM_SAVE_YOURSELF", self.arret_windows)   # Windows s'éteint ou ferme la session
         self.lire_file_icone()
         if cache:   # lancé au démarrage de Windows : direct près de l'horloge
             if self.creer_icone(demander=False):
@@ -1355,7 +1422,16 @@ class BoiteAOutils:
         else:
             self.racine.iconify()   # pas d'icône possible : on réduit dans la barre des tâches
 
+    def arret_windows(self):
+        """Windows s'éteint : on enregistre ce qui doit l'être, et on note que ce n'est pas un plantage."""
+        journal("Windows ferme la session")
+        if getattr(self, "stats_a_sauver", False):
+            ecrire_json(FICHIER_STATS, self.stats)
+        noter_arret_propre()
+
     def quitter(self):
+        if getattr(self, "stats_a_sauver", False):
+            ecrire_json(FICHIER_STATS, self.stats)
         if self.session:
             self.fin_session()   # remet le plan d'alim et les applis
         if self.icone:
@@ -3423,122 +3499,212 @@ def musique_en_cours():
 
 def lister_micros():
     """Noms des micros (périphériques d'enregistrement) actifs : [(nom, id), ...]."""
-    try:
-        import comtypes
-        from pycaw.pycaw import AudioUtilities
-    except ImportError:
-        return []
-    comtypes.CoInitialize()
-    micros = []
-    for d in AudioUtilities.GetAllDevices():
-        try:
-            actif = "Active" in str(getattr(d, "state", "Active"))
-            if actif and d.id and d.id.startswith("{0.0.1.") and d.FriendlyName:   # {0.0.1.* = enregistrement
-                micros.append((d.FriendlyName, d.id))
-        except Exception:
-            pass
-    return sorted(micros)
+    return AUDIO.demander(_son_lister, defaut=[]) or []
 
 
-def volume_micro():
-    """L'objet qui contrôle le micro choisi dans les Réglages (sinon celui par défaut de Windows)."""
-    try:
-        import comtypes
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
-    except ImportError:
-        return None
-    comtypes.CoInitialize()   # obligatoire dans chaque « fil » qui parle au son de Windows
-    choisi = REGLAGES.get("micro_nom")
-    if choisi:
-        for nom, ident in lister_micros():
-            if nom == choisi:
-                from ctypes import POINTER, cast
-                appareil = AudioUtilities.GetDeviceEnumerator().GetDevice(ident)
-                interface = appareil.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
-                return cast(interface, POINTER(IAudioEndpointVolume))
-    micro = AudioUtilities.GetMicrophone()
-    if micro is None:
-        return None
-    if hasattr(micro, "EndpointVolume"):   # nouvelles versions de pycaw
-        return micro.EndpointVolume
-    from ctypes import POINTER, cast
-    interface = micro.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None)
-    return cast(interface, POINTER(IAudioEndpointVolume))
+# -------------------------------------------------------------
+#  LE SON DE WINDOWS : UN SEUL FIL LUI PARLE
+# -------------------------------------------------------------
+#  Windows range le son derrière une technologie appelée « COM ». Elle
+#  est très stricte : si plusieurs « fils » (threads) lui parlent chacun
+#  leur tour puis disparaissent, elle peut faire planter le programme
+#  d'un coup, sans message. C'est ce qui fermait la boîte à outils.
+#  Maintenant : UN fil, créé une fois, qui reste là. Tout le monde lui
+#  demande poliment (AUDIO.demander) et attend sa réponse.
+
+class FilAudio:
+    def __init__(self):
+        self.taches = queue.Queue()
+        self.fil = None
+        self.verrou = threading.Lock()
+
+    def demander(self, fonction, *args, attente=8, defaut=None):
+        """Fait tourner fonction(*args) dans le fil du son et renvoie sa réponse (`defaut` si ça rate ou traîne)."""
+        if threading.current_thread() is self.fil:
+            return fonction(*args)
+        with self.verrou:
+            if self.fil is None or not self.fil.is_alive():
+                self.fil = threading.Thread(target=self.boucle, name="son", daemon=True)
+                self.fil.start()
+        if self.taches.qsize() >= 5:   # le fil est occupé : on n'empile pas les demandes
+            return defaut
+        boite = {"fini": threading.Event(), "res": defaut}
+        self.taches.put((fonction, args, boite))
+        boite["fini"].wait(attente)
+        return boite["res"]
+
+    def boucle(self):
+        while True:
+            fonction, args, boite = self.taches.get()
+            try:
+                boite["res"] = fonction(*args)
+            except ImportError:
+                pass   # pycaw pas installé : le bouton Micro proposera de l'installer
+            except Exception as e:
+                _son_oublier()   # micro débranché, casque éteint... : on repartira de zéro
+                if time.time() - SON["derniere_erreur"] > 600:   # une ligne toutes les 10 min au maximum
+                    SON["derniere_erreur"] = time.time()
+                    journal(f"Son : {type(e).__name__} {e}")
+            finally:
+                boite["fini"].set()
 
 
+AUDIO = FilAudio()
+# Ce que le fil du son garde sous la main (lui seul y touche)
+SON = {"pret": False, "enum": None, "id": None, "volume": None, "niveau": None, "appareil": None,
+       "verifie": 0.0, "ids": {}, "derniere_erreur": 0.0}
 MICRO_SILENCE = {"depuis": None, "vu_son": False}   # pour deviner une coupure faite avec le bouton du casque
 
 
-def crete_micro():
-    """Niveau sonore max du micro sur ~0,3 s (0.0 pile = aucun signal : micro coupé par le casque). None si inconnu."""
+def _son_oublier():
+    for cle in ("id", "volume", "niveau", "appareil"):
+        SON[cle] = None
+    SON["verifie"] = 0.0
+
+
+def _son_enumerateur():
+    """(fil du son) L'objet Windows qui connaît tous les périphériques audio. Créé une seule fois."""
+    import comtypes
+    if not SON["pret"]:
+        try:
+            comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+        except OSError:
+            pass   # déjà prêt dans ce fil
+        SON["pret"] = True
+    if SON["enum"] is None:
+        from pycaw.pycaw import AudioUtilities
+        SON["enum"] = AudioUtilities.GetDeviceEnumerator()
+    return SON["enum"]
+
+
+def _son_lister():
+    """(fil du son) Les micros branchés : [(nom, id), ...]."""
+    import comtypes
+    from pycaw.pycaw import PROPERTYKEY
+    cle_nom = PROPERTYKEY()   # la « case » où Windows range le nom affiché d'un périphérique
+    cle_nom.fmtid = comtypes.GUID("{a45c254e-df1c-4efd-8020-67d146a850e0}")
+    cle_nom.pid = 14
+    collection = _son_enumerateur().EnumAudioEndpoints(1, 1)   # 1 = enregistrement, 1 = actifs seulement
+    micros = []
+    for i in range(collection.GetCount()):
+        try:
+            appareil = collection.Item(i)
+            ident = appareil.GetId()
+            valeur = appareil.OpenPropertyStore(0).GetValue(cle_nom)   # 0 = lecture seule
+            nom = valeur.GetValue()
+            valeur.clear()
+            if ident and isinstance(nom, str) and nom:
+                micros.append((nom, ident))
+        except Exception:
+            pass
+    SON["ids"] = dict(micros)
+    return sorted(micros)
+
+
+def _son_brancher():
+    """(fil du son) Prépare le réglage de volume et le niveau sonore du micro choisi. On les garde ensuite
+    sous la main : on revérifie juste toutes les 15 s que le micro est toujours le même."""
+    if SON["volume"] is not None and time.time() - SON["verifie"] < 15:
+        return
+    import comtypes
+    from pycaw.pycaw import IAudioEndpointVolume, IAudioMeterInformation
+    enumerateur = _son_enumerateur()
+    appareil = None
+    choisi = REGLAGES.get("micro_nom")
+    if choisi:   # un micro précis choisi dans les Réglages
+        if choisi not in SON["ids"]:
+            _son_lister()
+        if choisi in SON["ids"]:
+            try:
+                appareil = enumerateur.GetDevice(SON["ids"][choisi])
+            except Exception:
+                SON["ids"] = {}
+    if appareil is None:
+        appareil = enumerateur.GetDefaultAudioEndpoint(1, 1)   # 1 = enregistrement, 1 = multimédia
+    ident = appareil.GetId()
+    SON["verifie"] = time.time()
+    if SON["volume"] is not None and ident == SON["id"]:
+        return   # toujours le même micro : on garde tout
+    # QueryInterface = la façon propre de demander « la partie volume » de l'appareil
+    # (avant, un raccourci appelé cast() libérait le même objet deux fois : c'était LE plantage)
+    volume = appareil.Activate(IAudioEndpointVolume._iid_, comtypes.CLSCTX_ALL, None).QueryInterface(IAudioEndpointVolume)
     try:
-        import time as _t
+        niveau = appareil.Activate(IAudioMeterInformation._iid_, comtypes.CLSCTX_ALL, None).QueryInterface(IAudioMeterInformation)
+    except Exception:
+        niveau = None
+    SON.update(id=ident, volume=volume, niveau=niveau, appareil=appareil)
+    MICRO_SILENCE.update(depuis=None, vu_son=False)
+
+
+def _son_capture_active():
+    """(fil du son) Une appli écoute-t-elle le micro en ce moment (Discord en vocal, un jeu...) ?
+    Si personne n'écoute, Windows donne un niveau de 0 même micro ouvert. None = impossible à savoir."""
+    try:
         import comtypes
-        from ctypes import POINTER, cast
-        from pycaw.pycaw import AudioUtilities, IAudioMeterInformation
-        comtypes.CoInitialize()
-        enum = AudioUtilities.GetDeviceEnumerator()
-        appareil = None
-        choisi = REGLAGES.get("micro_nom")
-        if choisi:
-            for nom, ident in lister_micros():
-                if nom == choisi:
-                    appareil = enum.GetDevice(ident)
-        if appareil is None:
-            appareil = enum.GetDefaultAudioEndpoint(1, 1)   # 1 = enregistrement, 1 = multimédia
-        m = cast(appareil.Activate(IAudioMeterInformation._iid_, comtypes.CLSCTX_ALL, None), POINTER(IAudioMeterInformation))
-        crete = 0.0
-        for _ in range(12):
-            crete = max(crete, m.GetPeakValue())
-            _t.sleep(0.025)
-        return crete
+        from pycaw.pycaw import IAudioSessionManager2
+        gestion = SON["appareil"].Activate(IAudioSessionManager2._iid_, comtypes.CLSCTX_ALL, None).QueryInterface(IAudioSessionManager2)
+        sessions = gestion.GetSessionEnumerator()
+        for i in range(sessions.GetCount()):
+            if sessions.GetSession(i).GetState() == 1:   # 1 = en train de tourner
+                return True
+        return False
     except Exception:
         return None
 
 
-def coupe_par_le_casque():
-    """Le casque HyperX coupe le son sans prévenir Windows : on le devine quand le micro donne 0 pile pendant 2,5 s."""
-    crete = crete_micro()
-    if crete is None:
+def _son_coupe_par_le_casque():
+    """(fil du son) Le casque HyperX coupe le micro sans prévenir Windows : on le devine quand le micro
+    donne 0 pile pendant 2,5 s alors qu'une appli l'écoute."""
+    niveau = SON["niveau"]
+    if niveau is None:
         return False
+    crete = 0.0
+    for _ in range(8):   # ~0,15 s d'écoute
+        crete = max(crete, niveau.GetPeakValue())
+        time.sleep(0.02)
     if crete > 0:
         MICRO_SILENCE["vu_son"] = True
         MICRO_SILENCE["depuis"] = None
         return False
     MICRO_SILENCE["depuis"] = MICRO_SILENCE["depuis"] or time.time()
-    return MICRO_SILENCE["vu_son"] and time.time() - MICRO_SILENCE["depuis"] >= 2.5
+    if not MICRO_SILENCE["vu_son"] or time.time() - MICRO_SILENCE["depuis"] < 2.5:
+        return False
+    return _son_capture_active() is not False
+
+
+def _son_micro(action):
+    """(fil du son) Le vrai travail de micro()."""
+    _son_brancher()
+    v = SON["volume"]
+    if v is None:
+        return None
+    # Certains casques sans fil (HyperX...) ignorent le « muet » de Windows : on se fie au VOLUME du micro.
+    # Couper = volume à 0 (+ muet), réactiver = on remet le volume d'avant (et on enlève le muet).
+    volume = v.GetMasterVolumeLevelScalar()
+    coupe = volume < 0.01
+    casque = False
+    if not coupe:
+        casque = coupe = _son_coupe_par_le_casque()
+    if action in ("basculer", "couper", "activer"):
+        coupe = {"basculer": not coupe, "couper": True, "activer": False}[action]
+        if coupe:
+            REGLAGES["volume_micro_avant"] = round(volume, 3) if volume >= 0.01 else REGLAGES.get("volume_micro_avant", 1.0)
+            enregistrer_reglages()
+            v.SetMasterVolumeLevelScalar(0.0, None)
+            v.SetMute(1, None)
+        else:
+            if casque:   # coupé avec le bouton du casque : muet puis plus muet, pour que le pilote HyperX le réactive aussi
+                v.SetMute(1, None)
+                time.sleep(0.3)
+            v.SetMute(0, None)
+            v.SetMasterVolumeLevelScalar(float(REGLAGES.get("volume_micro_avant", 1.0)) if volume < 0.01 else volume, None)
+        MICRO_SILENCE.update(depuis=None, vu_son=False)
+    return coupe
 
 
 def micro(action="etat"):
     """action = "etat", "basculer", "couper" ou "activer". Renvoie True si le micro est coupé (None si inconnu)."""
-    try:
-        v = volume_micro()
-        if v is None:
-            return None
-        # Certains casques sans fil (HyperX...) ignorent le « muet » de Windows : on se fie au VOLUME du micro.
-        # Couper = volume à 0 (+ muet), réactiver = on remet le volume d'avant (et on enlève le muet).
-        volume = v.GetMasterVolumeLevelScalar()
-        coupe = volume < 0.01
-        casque = False
-        if not coupe:
-            casque = coupe = coupe_par_le_casque()
-        if action in ("basculer", "couper", "activer"):
-            coupe = {"basculer": not coupe, "couper": True, "activer": False}[action]
-            if coupe:
-                REGLAGES["volume_micro_avant"] = round(volume, 3) if volume >= 0.01 else REGLAGES.get("volume_micro_avant", 1.0)
-                enregistrer_reglages()
-                v.SetMasterVolumeLevelScalar(0.0, None)
-                v.SetMute(1, None)
-            else:
-                if casque:   # coupé avec le bouton du casque : muet puis plus muet, pour que le pilote HyperX le réactive aussi
-                    v.SetMute(1, None)
-                    time.sleep(0.3)
-                v.SetMute(0, None)
-                v.SetMasterVolumeLevelScalar(float(REGLAGES.get("volume_micro_avant", 1.0)) if volume < 0.01 else volume, None)
-            MICRO_SILENCE["depuis"] = None
-        return coupe
-    except Exception:
-        return None
+    return AUDIO.demander(_son_micro, action)
 
 
 def suivre_musique(self):
@@ -3565,9 +3731,8 @@ def afficher_micro(self):
 
 
 def basculer_micro(self):
-    try:
-        import pycaw  # noqa: F401  (on vérifie juste qu'elle est là)
-    except ImportError:
+    import importlib.util
+    if importlib.util.find_spec("pycaw") is None:   # on regarde juste si la librairie est là, sans la charger ici
         if not messagebox.askyesno("Micro", "Pour couper le micro, il faut la librairie pycaw.\n\nL'installer maintenant ?"):
             return
         if not installer_paquets("pycaw"):
@@ -3988,6 +4153,8 @@ if __name__ == "__main__":
         except (OSError, ValueError):
             pass   # personne ne répond : on démarre normalement
     journal(f"Démarrage {sys.argv[1:]} depuis {Path(__file__).resolve()}")
+    surveiller_plantages()
+    noter_demarrage()
     threading.Thread(target=reparer_raccourci, daemon=True).start()
     try:   # range la copie de secours laissée sur le Bureau par les anciennes versions
         vieille = Path(__file__).resolve().with_name(Path(__file__).name + ".ancienne")
@@ -4015,4 +4182,5 @@ if __name__ == "__main__":
     except Exception:
         journal("Plantage au démarrage :\n" + __import__("traceback").format_exc())
         raise
+    noter_arret_propre()
     journal("Fermeture")
