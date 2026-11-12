@@ -56,7 +56,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.14"
+VERSION = "2.0.15"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -435,7 +435,7 @@ def lire_hwinfo():
     k32.CloseHandle.argtypes = [ctypes.c_void_p]
     poignee = k32.OpenFileMappingW(4, False, "Global\\HWiNFO_SENS_SM2")   # 4 = lecture seule
     if not poignee:
-        return None
+        return lire_lhm()   # HWiNFO ne partage rien : on essaie LibreHardwareMonitor
     try:
         adresse = k32.MapViewOfFile(poignee, 4, 0, 0, 0)
         if not adresse:
@@ -450,6 +450,69 @@ def lire_hwinfo():
     finally:
         k32.CloseHandle(poignee)
 
+
+
+
+# --- Plan B : LibreHardwareMonitor (gratuit, sans la limite de 12 h de HWiNFO gratuit) ---
+# Dans LibreHardwareMonitor : Options > Remote Web Server > Run (port 8085).
+def lire_lhm():
+    """Lit http://127.0.0.1:8085/data.json et renvoie les capteurs au même format que HWiNFO (ou None)."""
+    import urllib.request
+    try:
+        arbre = json.loads(urllib.request.urlopen("http://127.0.0.1:8085/data.json", timeout=1.5).read().decode("utf-8"))
+    except Exception:
+        return None
+
+    def nombre(texte):
+        trouve = re.match(r"\s*(-?[\d]+(?:[.,]\d+)?)", str(texte or ""))
+        return float(trouve.group(1).replace(",", ".")) if trouve else None
+
+    capteurs = []
+
+    def parcourir(noeud, materiel, groupe):
+        image = str(noeud.get("ImageURL") or "")
+        texte = str(noeud.get("Text") or "")
+        enfants = noeud.get("Children") or []
+        if enfants:
+            if "images_icon" in image and not image.endswith("computer.png"):
+                materiel = (image, texte)   # un composant : processeur, disque, carte graphique...
+            elif materiel:
+                groupe = texte              # un groupe : Temperatures, Load, Levels, Data...
+            for enfant in enfants:
+                parcourir(enfant, materiel, groupe)
+            return
+        valeur = nombre(noeud.get("Value"))
+        if valeur is None or not materiel:
+            return
+        image_m, nom_m = materiel
+        g, t = (groupe or "").lower(), texte.lower()
+        if "cpu" in image_m:
+            if g.startswith("temp") and t in ("cpu package", "core (tctl/tdie)", "core average"):
+                capteurs.append(("CPU", "CPU Package", "temp", valeur, "°C"))
+            elif g.startswith("load") and t == "cpu total":
+                capteurs.append(("CPU", "Total CPU Usage", "usage", valeur, "%"))
+        elif "hdd" in image_m:
+            disque = "S.M.A.R.T.: " + nom_m
+            if g.startswith("temp") and "temperature" in t and not capteurs_disque_temp.get(nom_m):
+                capteurs_disque_temp[nom_m] = True
+                capteurs.append((disque, "Drive Temperature", "temp", valeur, "°C"))
+            elif t == "remaining life":
+                capteurs.append((disque, "Drive Remaining Life", "autre", valeur, "%"))
+            elif t == "percentage used":
+                capteurs.append((disque, "Drive Remaining Life", "autre", max(0.0, 100 - valeur), "%"))
+            elif t == "data written":
+                capteurs.append((disque, "Total Host Writes", "autre", valeur, "GB"))
+
+    capteurs_disque_temp = {}
+    parcourir(arbre, None, None)
+    # un seul « CPU Package » (le premier trouvé)
+    vus, uniques = set(), []
+    for c in capteurs:
+        if c[:2] in vus and c[0] == "CPU":
+            continue
+        vus.add(c[:2])
+        uniques.append(c)
+    return uniques or None
 
 
 def sorte_capteur(nom):
@@ -1775,8 +1838,8 @@ class BoiteAOutils:
                     if temp >= 60:
                         soucis.append(f"disque {lettre or ''} chaud".replace("  ", " "))
             if not m["hwinfo"]:
-                self.astuce_hwinfo.config(text="ⓘ Température CPU : ouvre HWiNFO et coche « Shared Memory Support » "
-                                               "dans ses réglages, puis laisse-le ouvert.")
+                self.astuce_hwinfo.config(text="ⓘ Température CPU : lance LibreHardwareMonitor (serveur web activé) "
+                                               "ou HWiNFO avec « Shared Memory Support » coché.")
                 self.astuce_hwinfo.pack(fill="x")
             else:
                 self.astuce_hwinfo.pack_forget()

@@ -1,6 +1,6 @@
 {
-  "version": "2.0.14",
-  "plugin": "1.4.2",
-  "notes": "Plus de mini freeze : la carte graphique est lue directement par le pilote NVIDIA, sans relancer nvidia-smi toutes les 2 s (appli + plugin Stream Deck).",
-  "sha256": "61045e913758da75cf0ead1cf8cef143b916726179f384badac9774baf904fc5"
+  "version": "2.0.15",
+  "plugin": "1.4.3",
+  "notes": "Températures aussi via LibreHardwareMonitor (gratuit, sans la limite de 12 h de HWiNFO).",
+  "sha256": "a50657d6d0853ae8ff9881604688f764d2e88ef291d73ac9046ae1321810bad9"
 }
