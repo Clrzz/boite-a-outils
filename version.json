@@ -1,6 +1,6 @@
 {
-  "version": "3.0.0",
+  "version": "3.0.1",
   "plugin": "1.4.3",
-  "notes": "La grande refonte : liste « À faire », ventilateurs et pompe, résumé des parties, notifications, mini-fenêtre, recherche Ctrl+K, diagnostic.",
-  "sha256": "97c89546a148b213863063c73d99c7bfc14b1e72444fc56f7592caf4b29f66e9"
+  "notes": "La grande refonte, et la température du processeur s'affiche de nouveau avec LibreHardwareMonitor.",
+  "sha256": "8249fc0a80f9e74f9ecb93290ea91d02a91ea9a3585728c67ca5b560be9042ab"
 }

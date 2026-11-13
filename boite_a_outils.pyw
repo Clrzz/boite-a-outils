@@ -65,7 +65,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -471,6 +471,11 @@ def lire_hwinfo():
 
 # --- Plan B : LibreHardwareMonitor (gratuit, sans la limite de 12 h de HWiNFO gratuit) ---
 # Dans LibreHardwareMonitor : Options > Remote Web Server > Run (port 8085).
+# Les images que LibreHardwareMonitor donne aux COMPOSANTS (les groupes ont d'autres images)
+IMAGES_MATERIEL = {"cpu.png", "nvidia.png", "ati.png", "amd.png", "intel.png", "hdd.png", "ram.png",
+                   "mainboard.png", "chip.png", "nic.png", "battery.png", "psu.png", "bigng.png"}
+
+
 def lire_lhm():
     """Lit http://127.0.0.1:8085/data.json et renvoie les capteurs au même format que HWiNFO (ou None)."""
     import urllib.request
@@ -490,7 +495,7 @@ def lire_lhm():
         texte = str(noeud.get("Text") or "")
         enfants = noeud.get("Children") or []
         if enfants:
-            if "images_icon" in image and not image.endswith("computer.png"):
+            if image.rsplit("/", 1)[-1].lower() in IMAGES_MATERIEL:
                 materiel = (image, texte)   # un composant : processeur, disque, carte graphique...
             elif materiel:
                 groupe = texte              # un groupe : Temperatures, Load, Levels, Data...
@@ -503,8 +508,10 @@ def lire_lhm():
         image_m, nom_m = materiel
         g, t = (groupe or "").lower(), texte.lower()
         if "cpu" in image_m:
-            if g.startswith("temp") and t in ("cpu package", "core (tctl/tdie)", "core average"):
+            if g.startswith("temp") and t in ("cpu package", "core (tctl/tdie)"):
                 capteurs.append(("CPU", "CPU Package", "temp", valeur, "°C"))
+            elif g.startswith("temp") and t == "core average":
+                secours_cpu.append(("CPU", "CPU Package", "temp", valeur, "°C"))
             elif g.startswith("load") and t == "cpu total":
                 capteurs.append(("CPU", "Total CPU Usage", "usage", valeur, "%"))
         elif "hdd" in image_m:
@@ -539,8 +546,10 @@ def lire_lhm():
         elif g.startswith("power") and t in ("cpu package", "gpu package"):
             capteurs.append((lieu, "Puissance", "watts", valeur, "W"))
 
-    capteurs_disque_temp = {}
+    capteurs_disque_temp, secours_cpu = {}, []
     parcourir(arbre, None, None)
+    if not any(c[0] == "CPU" and c[2] == "temp" for c in capteurs):
+        capteurs += secours_cpu[:1]
     # un seul « CPU Package » (le premier trouvé)
     vus, uniques = set(), []
     for c in capteurs:
@@ -2969,9 +2978,9 @@ class BoiteAOutils:
 
     def annoncer_nouveautes(self):
         """Au premier lancement d'une nouvelle version, on montre ce qui a changé."""
-        if REGLAGES.get("version_vue") == VERSION:
+        if REGLAGES.get("version_vue") in (VERSION, NOUVEAUTES[0][0]):   # pas de fenêtre pour une petite correction
             return
-        REGLAGES["version_vue"] = VERSION
+        REGLAGES["version_vue"] = NOUVEAUTES[0][0]
         enregistrer_reglages()
         if self.racine.state() == "normal":
             self.quoi_de_neuf()
