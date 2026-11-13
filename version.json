@@ -1,6 +1,6 @@
 {
-  "version": "3.0.1",
-  "plugin": "1.4.3",
-  "notes": "La grande refonte, et la température du processeur s'affiche de nouveau avec LibreHardwareMonitor.",
-  "sha256": "8249fc0a80f9e74f9ecb93290ea91d02a91ea9a3585728c67ca5b560be9042ab"
+  "version": "3.0.2",
+  "plugin": "1.4.4",
+  "notes": "La grande refonte. Température du processeur de nouveau lue avec LibreHardwareMonitor, dans la boîte à outils et sur le Stream Deck.",
+  "sha256": "255bcc876e2b69ebe45951f9f8e2c1f7a675f2dbf8b078b902c4dc0032d1f797"
 }
