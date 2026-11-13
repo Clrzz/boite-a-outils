@@ -1,6 +1,6 @@
 {
-  "version": "2.0.16",
+  "version": "3.0.0",
   "plugin": "1.4.3",
-  "notes": "Corrige la boîte à outils qui se fermait toute seule (bug dans la lecture du micro).",
-  "sha256": "7e82f557c0f5ad1f1153edd1d125510ce30bb641680c103b75a0e69f8727ab03"
+  "notes": "La grande refonte : liste « À faire », ventilateurs et pompe, résumé des parties, notifications, mini-fenêtre, recherche Ctrl+K, diagnostic.",
+  "sha256": "97c89546a148b213863063c73d99c7bfc14b1e72444fc56f7592caf4b29f66e9"
 }

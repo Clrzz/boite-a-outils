@@ -1,5 +1,5 @@
 # =============================================================
-#  BOÎTE À OUTILS DE CRZ  -  version FENÊTRE
+#  BOÎTE À OUTILS DE CRZ  -  version 3
 # =============================================================
 #  Lancer : double-clic sur ce fichier (.pyw = pas de console noire)
 #           ou dans PowerShell :  python boite_a_outils.pyw
@@ -9,11 +9,17 @@
 #
 #  Rien n'est supprimé ou déplacé sans que tu cliques "Oui".
 #
-#  Onglet 🔐 Coffre : coffre-fort à mots de passe chiffré (AES-256).
-#  Le coffre est rangé dans  C:\Users\<toi>\CoffreFort\coffre.dat
+#  COMMENT CE FICHIER EST RANGÉ (de haut en bas) :
+#   1. Les réglages et les couleurs
+#   2. La « logique » : nettoyer, lire les capteurs, trouver les jeux...
+#      (des fonctions qui RENVOIENT un résultat, sans rien afficher)
+#   3. Les briques d'affichage (cartes, boutons, onglets...)
+#   4. La fenêtre et ses pages (classe BoiteAOutils)
+#   5. Le coffre-fort, puis le petit serveur pour le téléphone et le Stream Deck
+#   6. Le démarrage, tout en bas
 #
-#  Onglet ⚙️ Réglages : tout se règle là, sans toucher au code.
-#  Tes réglages sont dans  C:\Users\<toi>\BoiteAOutils\reglages.json
+#  Le coffre est rangé dans  C:\Users\<toi>\CoffreFort\coffre.dat
+#  Tes réglages sont dans   C:\Users\<toi>\BoiteAOutils\reglages.json
 # =============================================================
 
 import base64
@@ -59,7 +65,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "2.0.16"
+VERSION = "3.0.0"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -76,6 +82,15 @@ REGLAGES_DEFAUT = {
     "mode_performances": True,   # plan d'alim Performances pendant les parties
     "fermer_vers_icone": True,   # la croix range la fenêtre près de l'horloge
     "demarrage_windows": False,
+    "micro_nom": "",             # "" = le micro par défaut de Windows
+    # --- nouveautés de la v3 ---
+    "notifications": True,       # petites alertes Windows (surchauffe, disque plein, fin de partie...)
+    "alerte_disque": 90,         # % de remplissage à partir duquel un disque est signalé
+    "auto_profil": False,        # changer de profil tout seul quand un jeu démarre / s'arrête
+    "profil_en_jeu": "Jeu",
+    "accent": "Cyan",            # couleur des boutons : Cyan, Rose, Violet ou Vert
+    "mini_fenetre": False,       # petite fenêtre toujours visible avec les températures
+    "mini_pos": None,
 }
 REGLAGES = dict(REGLAGES_DEFAUT)
 
@@ -216,9 +231,9 @@ def assombrir(couleur, facteur=0.35):
 def taille_lisible(octets):
     for unite in ["o", "Ko", "Mo", "Go"]:
         if octets < 1024:
-            return f"{octets:.1f} {unite}"
+            return f"{octets:.1f} {unite}".replace(".", ",")
         octets /= 1024
-    return f"{octets:.1f} To"
+    return f"{octets:.1f} To".replace(".", ",")
 
 
 def taille_dossier(dossier):
@@ -396,7 +411,7 @@ def lire_gpu():
 # programmes lisent. Il faut l'activer : Paramètres > "Shared Memory Support".
 # On lit cette mémoire avec ctypes (qui permet d'appeler Windows directement).
 
-TYPES_HWINFO = {1: "temp", 7: "usage"}   # 1 = température, 7 = utilisation en %
+TYPES_HWINFO = {1: "temp", 3: "fan", 7: "usage"}   # 1 = température, 3 = ventilateur, 7 = utilisation en %
 
 
 def decoder_hwinfo(octets):
@@ -454,8 +469,6 @@ def lire_hwinfo():
         k32.CloseHandle(poignee)
 
 
-
-
 # --- Plan B : LibreHardwareMonitor (gratuit, sans la limite de 12 h de HWiNFO gratuit) ---
 # Dans LibreHardwareMonitor : Options > Remote Web Server > Run (port 8085).
 def lire_lhm():
@@ -505,6 +518,26 @@ def lire_lhm():
                 capteurs.append((disque, "Drive Remaining Life", "autre", max(0.0, 100 - valeur), "%"))
             elif t == "data written":
                 capteurs.append((disque, "Total Host Writes", "autre", valeur, "GB"))
+        # (v3) ventilateurs, températures en plus, puissance consommée
+        if any(m in image_m for m in ("nvidia", "ati.", "intel.")):
+            lieu = "Carte graphique"
+        elif "mainboard" in image_m or "chip" in image_m:
+            lieu = "Carte mère"
+        elif "cpu" in image_m:
+            lieu = "Processeur"
+        elif "ram" in image_m:
+            lieu = "Mémoire"
+        else:
+            return
+        if g.startswith("fan") and lieu in ("Carte graphique", "Carte mère"):
+            capteurs.append((lieu, texte, "fan", valeur, "RPM"))
+        elif g.startswith("control") and lieu in ("Carte graphique", "Carte mère"):
+            capteurs.append((lieu, texte, "commande", valeur, "%"))
+        elif g.startswith("temp") and not t.startswith(("warning", "critical", "distance")):
+            if lieu != "Processeur" or t in ("core max", "core average"):
+                capteurs.append((lieu, texte, "temp_plus", valeur, "°C"))
+        elif g.startswith("power") and t in ("cpu package", "gpu package"):
+            capteurs.append((lieu, "Puissance", "watts", valeur, "W"))
 
     capteurs_disque_temp = {}
     parcourir(arbre, None, None)
@@ -585,9 +618,17 @@ def lire_tout():
         except Exception:
             return None
     resultat = {"gpu": essayer(lire_gpu), "ram": essayer(lire_ram), "cpu_temp": None, "cpu_usage": None,
-                "disques": [], "reseau": essayer(compteurs_reseau)}
+                "disques": [], "reseau": essayer(compteurs_reseau), "ventilos": [], "temps": [], "watts": {}}
     capteurs = essayer(lire_hwinfo)
     resultat["hwinfo"] = capteurs is not None
+    commandes = {(c, n): v for c, n, type_, v, *_ in capteurs or [] if type_ == "commande"}
+    for composant, nom, type_, valeur, *_ in capteurs or []:
+        if type_ == "fan":   # un ventilateur : tours par minute + la vitesse demandée (en %) si on la connaît
+            resultat["ventilos"].append({"ou": composant, "nom": nom, "rpm": valeur, "pct": commandes.get((composant, nom))})
+        elif type_ == "temp_plus":
+            resultat["temps"].append((composant, nom, valeur))
+        elif type_ == "watts":
+            resultat["watts"][composant] = valeur
     for composant, nom, type_, valeur, *_ in capteurs or []:
         if type_ == "temp" and sorte_capteur(nom) == "cpu_temp":
             resultat["cpu_temp"] = valeur
@@ -1188,1412 +1229,9 @@ class Carte(tk.Frame):
         ext.destroy()
 
 
-class Navigation:
-    """Le menu à gauche : remplace la barre d'onglets.
-    Chaque page est un cadre ; on n'affiche que celle qui est choisie."""
-
-    def __init__(self, menu, zone, titre):
-        self.menu, self.zone, self.titre = menu, zone, titre
-        self.pages = []   # liste de (cadre, nom, ligne du menu)
-
-    def add(self, cadre, text):
-        icone, nom = text.split(" ", 1)
-        ligne = tk.Frame(self.menu, bg=MENU, cursor="hand2")
-        ligne.pack(fill="x", pady=1)
-        barre = tk.Frame(ligne, bg=MENU, width=3)
-        barre.pack(side="left", fill="y")
-        lbl = tk.Label(ligne, text=f"  {icone}   {nom}", bg=MENU, fg=GRIS, font=("Segoe UI", 10),
-                       anchor="w", padx=8, pady=5)
-        lbl.pack(side="left", fill="x", expand=True)
-        index = len(self.pages)
-        for w in (ligne, lbl):
-            w.bind("<Button-1>", lambda e, i=index: self.select(i))
-        self.pages.append((cadre, nom, ligne, barre, lbl))
-        if index == 0:
-            self.select(0)
-
-    def organiser(self, groupes):
-        """Range le menu en groupes avec un petit titre : [("Surveiller", [noms...]), ...]."""
-        ordre = [n for _, noms in groupes for n in noms]
-        reste = [p for p in self.pages if p[1] not in ordre]
-        self.pages = [p for n in ordre for p in self.pages if p[1] == n] + reste
-        for p in self.pages:
-            p[2].pack_forget()
-        position = 0
-        for titre, noms in groupes:
-            tk.Label(self.menu, text=espacer(titre), bg=MENU, fg="#55557a", font=("Segoe UI", 7, "bold"),
-                     anchor="w").pack(fill="x", padx=22, pady=(10, 2))
-            for _ in noms:
-                if position < len(self.pages):
-                    self.pages[position][2].pack(fill="x", pady=0)
-                    position += 1
-        for p in self.pages[position:]:
-            p[2].pack(fill="x", pady=0)
-        for i, p in enumerate(self.pages):
-            for w in (p[2], p[4]):
-                w.bind("<Button-1>", lambda e, i=i: self.select(i))
-
-    def deplacer(self, nom, apres):
-        """Change la place d'une page dans le menu."""
-        page = next(p for p in self.pages if p[1] == nom)
-        self.pages.remove(page)
-        position = next(i for i, p in enumerate(self.pages) if p[1] == apres) + 1
-        self.pages.insert(position, page)
-        for p in self.pages:   # on réaffiche les lignes du menu dans le bon ordre
-            p[2].pack_forget()
-        for i, p in enumerate(self.pages):
-            p[2].pack(fill="x", pady=1)
-            for w in (p[2], p[4]):
-                w.bind("<Button-1>", lambda e, i=i: self.select(i))
-
-    def select(self, index):
-        for i, (cadre, nom, ligne, barre, lbl) in enumerate(self.pages):
-            actif = i == index
-            fond = "#0d1b24" if actif else MENU   # fond légèrement cyan pour la page active
-            ligne.config(bg=fond)
-            lbl.config(bg=fond, fg="white" if actif else GRIS)
-            barre.config(bg=CYAN if actif else MENU)
-            if actif:
-                cadre.pack(fill="both", expand=True)
-                self.titre.config(text=nom)
-            else:
-                cadre.pack_forget()
-
-
-class BoiteAOutils:
-
-    def __init__(self, racine, cache=False):
-        self.racine = racine
-        self.icone = None                 # l'icône près de l'horloge
-        self.file_icone = queue.Queue()   # messages venant de l'icône (autre "fil")
-        self.session = None               # infos de la session gaming en cours
-        racine.title("Boîte à outils de Crz")
-        if (DOSSIER_APPLI / "icone.ico").exists():   # logo de l'appli (fenêtre + barre des tâches)
-            try:
-                racine.iconbitmap(default=str(DOSSIER_APPLI / "icone.ico"))
-            except tk.TclError:
-                pass
-        racine.geometry("1080x720")
-        racine.minsize(980, 660)
-        racine.configure(bg=FOND)
-        self.style()
-
-        # Menu à gauche
-        menu = tk.Frame(racine, bg=MENU, width=210)
-        menu.pack(side="left", fill="y")
-        menu.pack_propagate(False)   # garde la largeur fixe
-        logo = tk.Canvas(menu, bg=MENU, height=74, highlightthickness=0)
-        logo.pack(fill="x", padx=(18, 0), pady=(16, 4))
-        police = ("Segoe UI", 19, "bold")
-        logo.create_text(2, 4, text="⚡", fill=CYAN, anchor="nw", font=police)
-        logo.create_text(34, 4, text="CRZ", fill=CYAN, anchor="nw", font=police)
-        x = 2
-        mesure = tk.font.Font(font=police)
-        mot = "TOOLBOX"
-        for i, lettre in enumerate(mot):   # chaque lettre un peu plus violette : effet dégradé
-            logo.create_text(x, 38, text=lettre, fill=melanger(CYAN, VIOLET, i / (len(mot) - 1)), anchor="nw", font=police)
-            x += mesure.measure(lettre) + 1
-        tk.Frame(racine, bg=BORD, width=1).pack(side="left", fill="y")   # trait de séparation
-
-        # Zone principale : titre de la page + la page
-        principale = tk.Frame(racine, bg=FOND, padx=24, pady=18)
-        principale.pack(side="left", fill="both", expand=True)
-        entete = tk.Frame(principale, bg=FOND)
-        entete.pack(fill="x", pady=(0, 12))
-        titre = tk.Label(entete, text="", bg=FOND, fg=TEXTE, font=("Segoe UI", 20, "bold"), anchor="w")
-        titre.pack(side="left")
-        self.pastille = tk.Label(entete, text="…", bg=FOND, fg=GRIS, font=("Segoe UI", 10, "bold"), padx=12, pady=3)
-        self.pastille.pack(side="left", padx=(14, 0))
-        self.bouton_maj_appli = tk.Button(entete, text="", relief="flat", bg=CYAN, fg=FOND, activebackground=VERT,
-                                 font=("Segoe UI", 10, "bold"), cursor="hand2", padx=12, bd=0, highlightthickness=0,
-                                 command=self.lancer_maj_appli)
-        self.horloge = tk.Label(entete, text="", bg=FOND, fg=GRIS, font=("Segoe UI", 10))
-        self.horloge.pack(side="right", padx=(10, 0))
-        self.maj_horloge()
-        zone = tk.Frame(principale, bg=FOND)
-        zone.pack(fill="both", expand=True)
-
-        onglets = Navigation(menu, zone, titre)
-        self.demarrer_serveur()   # pour le téléphone et le Stream Deck
-        self.onglet_rapport(self.nouvel_onglet(onglets, "📊 Rapport"))   # créé en 1er (les stats servent partout)
-        self.onglet_gpu(self.nouvel_onglet(onglets, "◉ Tableau de bord", carte=False))
-        self.onglet_profils(self.nouvel_onglet(onglets, "🎛 Profils"))
-        self.onglet_soundboard(self.nouvel_onglet(onglets, "🔊 Soundboard"))
-        self.onglet_nettoyeur(self.nouvel_onglet(onglets, "🧹 Nettoyer"))
-        self.onglet_gaming(self.nouvel_onglet(onglets, "🎮 Gaming"))
-        self.onglet_temps_de_jeu(self.nouvel_onglet(onglets, "⏱ Temps de jeu"))
-        self.onglet_sante(self.nouvel_onglet(onglets, "🩺 Santé du PC"))
-        self.onglet_rangeur(self.nouvel_onglet(onglets, "📂 Ranger"))
-        self.onglet_prix(self.nouvel_onglet(onglets, "🔔 Alerte prix"))
-        self.coffre = Coffre(self.nouvel_onglet(onglets, "🔐 Coffre-fort"), racine)
-        self.onglet_telephone(self.nouvel_onglet(onglets, "📱 Téléphone"))
-        self.onglet_reglages(self.nouvel_onglet(onglets, "⚙ Réglages"))
-        onglets.organiser([("Surveiller", ["Tableau de bord", "Santé du PC", "Rapport", "Temps de jeu"]),
-                           ("Agir", ["Nettoyer", "Gaming", "Profils", "Soundboard", "Ranger"]),
-                           ("Outils", ["Coffre-fort", "Alerte prix", "Téléphone", "Réglages"])])
-        onglets.select(0)
-        tk.Label(menu, text=f"v{VERSION}", bg=MENU, fg="#44445e", font=("Segoe UI", 8)).pack(side="bottom", pady=8)
-        self.maj_dispo = None
-        self.racine.after(8000, lambda: self.verifier_maj_appli(au_demarrage=True))
-        self.navigation = onglets
-
-        racine.protocol("WM_DELETE_WINDOW", self.fermer)   # clic sur la croix
-        racine.protocol("WM_SAVE_YOURSELF", self.arret_windows)   # Windows s'éteint ou ferme la session
-        self.lire_file_icone()
-        if cache:   # lancé au démarrage de Windows : direct près de l'horloge
-            if self.creer_icone(demander=False):
-                racine.withdraw()
-            else:
-                racine.iconify()
-
-    # ---------- icône près de l'horloge ----------
-
-    def creer_icone(self, demander=True):
-        """Crée l'icône avec pystray (+ Pillow pour dessiner l'image)."""
-        if self.icone:
-            return True
-        try:
-            import pystray
-            from PIL import Image, ImageDraw
-        except ImportError:
-            if not demander or not messagebox.askyesno(
-                    "Icône près de l'horloge",
-                    "Pour se ranger près de l'horloge, il faut 2 petites librairies (pystray et Pillow).\n\n"
-                    "Les installer maintenant ? (environ 30 secondes)"):
-                return False
-            if not installer_paquets("pystray", "pillow"):
-                messagebox.showerror("Oups", "Installation ratée. Dans PowerShell :\npython -m pip install pystray pillow")
-                return False
-            import pystray
-            from PIL import Image, ImageDraw
-
-        try:   # le logo de l'appli s'il existe
-            image = Image.open(DOSSIER_APPLI / "logo.png").convert("RGBA").resize((64, 64))
-        except Exception:   # sinon on dessine une petite caisse à outils bleue
-            image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-            d = ImageDraw.Draw(image)
-            d.rounded_rectangle([4, 20, 60, 58], radius=8, fill=ACCENT)
-            d.rounded_rectangle([22, 8, 42, 24], radius=5, outline=ACCENT, width=5)
-            d.rectangle([4, 34, 60, 38], fill=FOND)
-
-        envoyer = self.file_icone.put   # l'icône tourne dans un autre fil : elle passe par la file
-        menu = pystray.Menu(
-            pystray.MenuItem("Ouvrir", lambda: envoyer("ouvrir"), default=True),
-            pystray.MenuItem("Quitter", lambda: envoyer("quitter")),
-        )
-        try:
-            self.icone = pystray.Icon("boite_a_outils", image, "Boîte à outils de Crz", menu)
-            self.icone.run_detached()
-        except Exception:   # icône impossible sur ce PC : on fera sans
-            self.icone = None
-            return False
-        return True
-
-    def lire_file_icone(self):
-        """Toutes les 200 ms, on regarde si l'icône nous a demandé quelque chose."""
-        try:
-            while True:
-                ordre = self.file_icone.get_nowait()
-                if ordre == "ouvrir":
-                    self.montrer()
-                elif ordre == "quitter":
-                    self.quitter()
-                    return
-                elif isinstance(ordre, tuple) and ordre[0] == "profil":
-                    self.activer_profil(ordre[1])
-                elif isinstance(ordre, tuple) and ordre[0] == "micro":
-                    self.afficher_micro()
-        except queue.Empty:
-            pass
-        self.racine.after(200, self.lire_file_icone)
-
-    def montrer(self):
-        self.racine.deiconify()
-        self.racine.lift()
-        self.racine.focus_force()
-
-    def fermer(self):
-        if not REGLAGES["fermer_vers_icone"]:
-            self.quitter()
-        elif self.creer_icone():
-            if self.coffre.mdp_maitre:   # sécurité : on verrouille le coffre en cachant la fenêtre
-                self.coffre.verrouiller()
-            self.racine.withdraw()
-        else:
-            self.racine.iconify()   # pas d'icône possible : on réduit dans la barre des tâches
-
-    def arret_windows(self):
-        """Windows s'éteint : on enregistre ce qui doit l'être, et on note que ce n'est pas un plantage."""
-        journal("Windows ferme la session")
-        if getattr(self, "stats_a_sauver", False):
-            ecrire_json(FICHIER_STATS, self.stats)
-        noter_arret_propre()
-
-    def quitter(self):
-        if getattr(self, "stats_a_sauver", False):
-            ecrire_json(FICHIER_STATS, self.stats)
-        if self.session:
-            self.fin_session()   # remet le plan d'alim et les applis
-        if self.icone:
-            self.icone.stop()
-        if getattr(self, "serveur", None):
-            self.serveur.shutdown()
-        self.racine.destroy()
-
-    # ---------- petits outils d'affichage ----------
-
-    def style(self):
-        s = ttk.Style()
-        s.theme_use("clam")
-        s.configure("TNotebook", background=FOND, borderwidth=0)
-        s.configure("TNotebook.Tab", background=CARTE, foreground=GRIS,
-                    padding=(8, 6), font=("Segoe UI", 10))
-        # Style de la liste du coffre-fort
-        s.configure("Treeview", background=FOND, fieldbackground=FOND, foreground=TEXTE,
-                    rowheight=26, font=("Segoe UI", 10), borderwidth=0)
-        s.configure("Treeview.Heading", background=CARTE, foreground=GRIS,
-                    font=("Segoe UI", 10, "bold"), relief="flat")
-        s.map("Treeview", background=[("selected", ACCENT)], foreground=[("selected", FOND)])
-        s.configure("TCombobox", fieldbackground=FOND, background=CARTE, foreground=TEXTE, arrowcolor=CYAN,
-                    bordercolor=BORD, lightcolor=BORD, darkcolor=BORD)
-        s.map("TCombobox", fieldbackground=[("readonly", FOND)], foreground=[("readonly", TEXTE)],
-              selectbackground=[("readonly", FOND)], selectforeground=[("readonly", TEXTE)])
-        self.racine.option_add("*TCombobox*Listbox.background", CARTE)
-        self.racine.option_add("*TCombobox*Listbox.foreground", TEXTE)
-        self.racine.option_add("*TCombobox*Listbox.selectBackground", CYAN)
-        self.racine.option_add("*TCombobox*Listbox.selectForeground", FOND)
-        s.map("TNotebook.Tab", background=[("selected", ACCENT)],
-              foreground=[("selected", "white")])
-
-    def nouvel_onglet(self, onglets, nom, carte=True):
-        if carte:   # page posée dans une grande carte avec bordure
-            cadre = Carte(onglets.zone, padx=20, pady=16)
-        else:
-            cadre = tk.Frame(onglets.zone, bg=FOND)
-        onglets.add(cadre, text=nom)
-        return cadre
-
-    def carte(self, parent):
-        """Une petite carte sombre avec une bordure fine."""
-        return Carte(parent)
-
-    def etiquette(self, parent, texte):
-        """Petit titre gris en majuscules, style néon."""
-        lbl = tk.Label(parent, text=espacer(texte), bg=CARTE, fg=GRIS, font=("Segoe UI", 9), anchor="w")
-        lbl.pack(fill="x")
-        return lbl
-
-    def jauge(self, parent, couleur):
-        """Une barre de progression fine (un Canvas) ; renvoie une fonction pour la remplir."""
-        c = tk.Canvas(parent, height=14, width=1, bg=CARTE, highlightthickness=0)
-        c.pack(fill="x", pady=(8, 0))
-
-        def remplir(fraction, teinte=couleur):
-            c.delete("all")
-            larg = max(c.winfo_width(), 50)
-            fin = 7 + (larg - 14) * max(0, min(1, fraction))
-            c.create_line(7, 7, larg - 7, 7, fill="#1c1c2c", width=7, capstyle="round")
-            if fraction > 0:
-                c.create_line(7, 7, fin, 7, fill=melanger(CARTE, teinte, 0.25), width=13, capstyle="round")   # lueur
-                c.create_line(7, 7, fin, 7, fill=teinte, width=7, capstyle="round")
-        return remplir
-
-    def texte(self, parent, contenu="", taille=10, couleur=TEXTE, gras=False):
-        lbl = tk.Label(parent, text=contenu, bg=CARTE, fg=couleur, justify="left",
-                       anchor="w", font=("Segoe UI", taille, "bold" if gras else "normal"))
-        lbl.pack(fill="x", pady=2)
-        return lbl
-
-    def bouton(self, parent, contenu, action, couleur=ACCENT):
-        btn = tk.Button(parent, text=contenu, command=action, bg=couleur, fg=texte_sur(couleur),
-                        activebackground=couleur, activeforeground=texte_sur(couleur), relief="flat",
-                        font=("Segoe UI", 10, "bold"), padx=14, pady=6, cursor="hand2")
-        btn.pack(anchor="w", pady=6)
-        return btn
-
-    def en_fond(self, travail, ensuite):
-        """Lance `travail` en arrière-plan (la fenêtre ne gèle pas),
-        puis appelle `ensuite(resultat)` quand c'est fini."""
-        boite = {}
-
-        def executer():
-            try:
-                boite["res"] = travail()
-            except Exception as e:
-                boite["res"] = e
-        fil = threading.Thread(target=executer, daemon=True)
-        fil.start()
-
-        def verifier():
-            if fil.is_alive():
-                self.racine.after(100, verifier)   # on revérifie dans 100 ms
-            else:
-                ensuite(boite.get("res"))
-        verifier()
-
-    # ---------- 🧹 NETTOYEUR ----------
-
-    def onglet_nettoyeur(self, cadre):
-        self.texte(cadre, "Nettoyer le PC", 13, gras=True)
-        self.texte(cadre, "Coche ce que tu veux nettoyer, puis Analyser pour voir la place gagnée.", couleur=GRIS)
-        self.cadre_zones = tk.Frame(cadre, bg=CARTE)
-        self.cadre_zones.pack(fill="x", pady=4)
-        self.construire_zones()
-        boutons = tk.Frame(cadre, bg=CARTE)
-        boutons.pack(fill="x")
-        self.bouton(boutons, "🔍 Analyser", self.analyser).pack(side="left", padx=(0, 8))
-        self.btn_nettoyer = self.bouton(boutons, "🧹 Nettoyer", self.nettoyer, VERT)
-        self.btn_nettoyer.pack(side="left")
-        self.btn_nettoyer.config(state="disabled")
-        self.resultat_nettoyage = self.texte(cadre, "", 11, VERT, True)
-
-    def construire_zones(self):
-        """(Re)crée une case à cocher par zone de nettoyage."""
-        for w in self.cadre_zones.winfo_children():
-            w.destroy()
-        self.zones = zones_nettoyage()
-        self.clips = []
-        for zone in self.zones:
-            zone["var"] = tk.BooleanVar(value=zone["coche"])
-            zone["case"] = tk.Checkbutton(self.cadre_zones, text=zone["nom"], variable=zone["var"],
-                                          bg=CARTE, fg=TEXTE, selectcolor=FOND, activebackground=CARTE,
-                                          activeforeground=TEXTE, font=("Segoe UI", 10), anchor="w",
-                                          highlightthickness=0, bd=0)
-            zone["case"].pack(fill="x", pady=1)
-            zone["taille"] = 0
-
-    def analyser(self):
-        self.resultat_nettoyage.config(text="Analyse en cours...", fg=GRIS)
-
-        def travail():
-            tailles = {}
-            for zone in self.zones:
-                if zone["cle"] == "medal":
-                    clips = vieux_clips()
-                    tailles["medal"] = (sum(c.stat().st_size for c in clips), clips)
-                else:
-                    tailles[zone["cle"]] = (sum(taille_dossier(d) for d in zone["dossiers"] if d.exists()), None)
-            return tailles
-
-        def ensuite(tailles):
-            if isinstance(tailles, Exception):
-                self.resultat_nettoyage.config(text=f"Erreur : {tailles}", fg=ROUGE)
-                return
-            for zone in self.zones:
-                zone["taille"], clips = tailles[zone["cle"]]
-                texte = f"{zone['nom']}  →  {taille_lisible(zone['taille'])}"
-                if zone["cle"] == "medal":
-                    self.clips = clips
-                    texte = (f"{zone['nom']}  →  {len(clips)} clips, {taille_lisible(zone['taille'])}"
-                             if DOSSIER_MEDAL.exists() else f"{zone['nom']}  →  dossier {DOSSIER_MEDAL} introuvable")
-                zone["case"].config(text=texte)
-            self.resultat_nettoyage.config(text="")
-            self.btn_nettoyer.config(state="normal")
-        self.en_fond(travail, ensuite)
-
-    def nettoyer(self):
-        choisies = [z for z in self.zones if z["var"].get()]
-        if not choisies:
-            return
-        liste = "\n".join(f"• {z['nom'].split(' (')[0]} : {taille_lisible(z['taille'])}" for z in choisies)
-        if not messagebox.askyesno("Nettoyer", f"Je nettoie :\n\n{liste}\n\nOn y va ?"):
-            return
-        self.resultat_nettoyage.config(text="Nettoyage en cours...", fg=GRIS)
-
-        def travail():
-            libere = 0
-            for zone in choisies:
-                if zone["cle"] == "medal":
-                    libere += supprimer(self.clips)
-                elif zone["cle"] == "maj":
-                    if nettoyer_maj_windows():
-                        libere += zone["taille"]
-                else:
-                    avant = sum(taille_dossier(d) for d in zone["dossiers"])
-                    for d in zone["dossiers"]:
-                        vider_dossier(d)
-                    libere += avant - sum(taille_dossier(d) for d in zone["dossiers"])
-            return libere
-
-        def ensuite(libere):
-            if isinstance(libere, Exception):
-                self.resultat_nettoyage.config(text=f"Erreur : {libere}", fg=ROUGE)
-                return
-            self.resultat_nettoyage.config(text=f"✅ {taille_lisible(libere)} libérés !", fg=VERT)
-            self.noter("nettoye", libere, "somme")
-            self.analyser()
-        self.en_fond(travail, ensuite)
-
-    # ---------- 🌡️ TEMPÉRATURES ----------
-
-    def tuile(self, parent, titre):
-        """Une case avec un titre, une grosse température et des détails."""
-        cadre = tk.Frame(parent, bg=FOND, padx=14, pady=10)
-        cadre.pack(side="left", fill="both", expand=True, padx=4)
-        tk.Label(cadre, text=titre, bg=FOND, fg=GRIS, font=("Segoe UI", 10, "bold")).pack()
-        temp = tk.Label(cadre, text="-- °C", bg=FOND, fg=VERT, font=("Segoe UI", 34, "bold"))
-        temp.pack()
-        details = tk.Label(cadre, text="", bg=FOND, fg=TEXTE, font=("Segoe UI", 10), justify="center")
-        details.pack()
-        return temp, details
-
-    def tuile(self, parent, titre, couleur):
-        """Une tuile de mesure : titre + état, grosse valeur + unité, détail, jauge."""
-        c = Carte(parent, padx=14, pady=10)
-        haut = tk.Frame(c, bg=CARTE)
-        haut.pack(fill="x")
-        tk.Label(haut, text=espacer(titre), bg=CARTE, fg=GRIS, font=("Segoe UI", 8)).pack(side="left")
-        etat = tk.Label(haut, text="", bg=CARTE, fg=VERT, font=("Segoe UI", 8, "bold"))
-        etat.pack(side="right")
-        ligne = tk.Frame(c, bg=CARTE)
-        ligne.pack(fill="x", pady=(2, 0))
-        valeur = tk.Label(ligne, text="--", bg=CARTE, fg=couleur, font=("Segoe UI", 26, "bold"))
-        valeur.pack(side="left")
-        unite = tk.Label(ligne, text="", bg=CARTE, fg=GRIS, font=("Segoe UI", 11, "bold"))
-        unite.pack(side="left", anchor="s", pady=(0, 8), padx=(2, 0))
-        detail = tk.Label(c, text="", bg=CARTE, fg=GRIS, font=("Segoe UI", 9), anchor="w")
-        detail.pack(fill="x")
-        return c, {"etat": etat, "valeur": valeur, "unite": unite, "detail": detail,
-                   "jauge": self.jauge(c, couleur), "couleur": couleur}
-
-    def remplir_tuile(self, t, valeur, unite, detail, fraction, etat, couleur_etat, couleur_valeur=None):
-        t["valeur"].config(text=valeur, fg=couleur_valeur or t["couleur"])
-        t["unite"].config(text=unite)
-        t["detail"].config(text=detail)
-        t["etat"].config(text=espacer(etat), fg=couleur_etat)
-        t["jauge"](fraction, couleur_valeur or t["couleur"])
-
-    def action_rapide(self, parent, icone, titre, couleur, commande):
-        """Un gros bouton : icône colorée + titre + petite info à droite. Renvoie le label de l'info."""
-        fond, survol = "#15152a", "#1d1d36"
-        b = tk.Frame(parent, bg=fond, highlightthickness=1, highlightbackground=BORD, cursor="hand2", padx=10, pady=7)
-        b.pack(fill="x", pady=3)
-        ic = tk.Label(b, text=icone, bg=melanger(fond, couleur, 0.22), fg=TEXTE, font=("Segoe UI", 11), width=2)
-        ic.pack(side="left")
-        nom = tk.Label(b, text=titre, bg=fond, fg=TEXTE, font=("Segoe UI", 10, "bold"))
-        nom.pack(side="left", padx=(10, 0))
-        info = tk.Label(b, text="", bg=fond, fg=GRIS, font=("Segoe UI", 9))
-        info.pack(side="right")
-        widgets = (b, nom, info)
-
-        def teinte(couleur_fond):
-            for w in widgets:
-                w.config(bg=couleur_fond)
-        for w in (b, ic, nom, info):
-            w.bind("<Button-1>", lambda e: commande())
-            w.bind("<Enter>", lambda e: teinte(survol))
-            w.bind("<Leave>", lambda e: teinte(fond))
-        return info
-
-    def aller_a(self, nom):
-        """Ouvre une page du menu par son nom."""
-        noms = [p[1] for p in self.navigation.pages]
-        if nom in noms:
-            self.navigation.select(noms.index(nom))
-
-    def mode_jeu(self):
-        if "Jeu" in REGLAGES.get("profils", {}):
-            self.activer_profil("Jeu")
-        else:
-            self.aller_a("Gaming")
-
-    def menu_profils(self, evt=None):
-        menu = tk.Menu(self.racine, tearoff=0, bg=CARTE, fg=TEXTE, activebackground=CYAN, activeforeground=FOND)
-        for nom, p in REGLAGES.get("profils", {}).items():
-            coche = "✓ " if nom == REGLAGES.get("profil_actif") else "    "
-            menu.add_command(label=f"{coche}{p.get('icone', '')} {nom}", command=lambda n=nom: self.activer_profil(n))
-        menu.add_separator()
-        menu.add_command(label="Modifier les profils…", command=lambda: self.aller_a("Profils"))
-        x, y = self.racine.winfo_pointerxy()
-        menu.tk_popup(x, y)
-
-    def onglet_gpu(self, cadre):
-        """Le tableau de bord : tout le PC sur un écran, clair et lisible."""
-        # Ligne 1 : quatre tuiles de mesures
-        ligne1 = tk.Frame(cadre, bg=FOND)
-        ligne1.pack(fill="x")
-        self.tuiles = {}
-        for col, (cle, titre, couleur) in enumerate((("cpu", "Processeur", CYAN), ("gpu", "Graphique", ROSE),
-                                                      ("ram", "Mémoire", TEXTE), ("net", "Connexion", TEXTE))):
-            ligne1.columnconfigure(col, weight=1, uniform="tuile")
-            carte, self.tuiles[cle] = self.tuile(ligne1, titre, couleur)
-            carte.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 5, 0 if col == 3 else 5))
-        self.tuiles["ram"]["jauge_couleur"] = VIOLET
-        self.tuiles["net"]["jauge_couleur"] = VERT
-
-        # Ligne 2 : graphique + actions rapides
-        ligne2 = tk.Frame(cadre, bg=FOND)
-        ligne2.pack(fill="both", expand=True, pady=10)
-        ligne2.columnconfigure(0, weight=1)
-        ligne2.rowconfigure(0, weight=1)
-        graph = Carte(ligne2, padx=14, pady=10)
-        graph.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-        tete = tk.Frame(graph, bg=CARTE)
-        tete.pack(fill="x")
-        tk.Label(tete, text=espacer("Températures · 10 dernières minutes"), bg=CARTE, fg=GRIS,
-                 font=("Segoe UI", 8)).pack(side="left")
-        self.legende_alerte = tk.Label(tete, text="", bg=CARTE, fg=ORANGE, font=("Segoe UI", 8, "bold"))
-        self.legende_alerte.pack(side="right")
-        tk.Label(tete, text="● GPU   ", bg=CARTE, fg=ROSE, font=("Segoe UI", 8, "bold")).pack(side="right")
-        tk.Label(tete, text="● CPU   ", bg=CARTE, fg=CYAN, font=("Segoe UI", 8, "bold")).pack(side="right")
-        self.graphique = tk.Canvas(graph, bg=CARTE, height=170, width=1, highlightthickness=0)
-        self.graphique.pack(fill="both", expand=True, pady=(6, 0))
-        self.graphique.bind("<Configure>", lambda e: self.dessiner_graphique())
-        self.astuce_hwinfo = tk.Label(graph, text="", bg=CARTE, fg=ORANGE, font=("Segoe UI", 9), anchor="w",
-                                      justify="left", wraplength=560)
-        self.astuce_hwinfo.pack(fill="x")
-        self.historique = {"cpu": deque(maxlen=300), "gpu": deque(maxlen=300)}
-
-        actions = Carte(ligne2, padx=12, pady=10)
-        actions.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
-        actions.exterieur.config(width=228)
-        tk.Label(actions, text=espacer("Actions rapides"), bg=CARTE, fg=GRIS, font=("Segoe UI", 8),
-                 anchor="w").pack(fill="x", pady=(0, 4))
-        self.info_mode_jeu = self.action_rapide(actions, "🎮", "Mode jeu", CYAN, self.mode_jeu)
-        self.info_mode_jeu.config(text="profil Jeu")
-        self.action_rapide(actions, "🧹", "Nettoyer", VERT, lambda: self.aller_a("Nettoyer")).config(text="ouvrir ›")
-        self.info_micro = self.action_rapide(actions, "🎙", "Micro", ROSE, self.basculer_micro)
-        self.info_profil_dash = self.action_rapide(actions, "🎛", "Profil", VIOLET, self.menu_profils)
-
-        # Ligne 3 : disques, jeu, musique
-        ligne3 = tk.Frame(cadre, bg=FOND)
-        ligne3.pack(fill="x")
-        for col, poids in enumerate((6, 5, 6)):
-            ligne3.columnconfigure(col, weight=poids, uniform="bas")
-
-        disques = Carte(ligne3, padx=14, pady=10)
-        disques.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
-        tete = tk.Frame(disques, bg=CARTE)
-        tete.pack(fill="x")
-        tk.Label(tete, text=espacer("Disques"), bg=CARTE, fg=GRIS, font=("Segoe UI", 8)).pack(side="left")
-        self.dash_disques = tk.Label(tete, text="", bg=CARTE, fg=VERT, font=("Segoe UI", 8, "bold"))
-        self.dash_disques.pack(side="right")
-        self.cadre_dash_disques = tk.Frame(disques, bg=CARTE)
-        self.cadre_dash_disques.pack(fill="x", pady=(4, 0))
-        self.lignes_disques = {}
-
-        jeu = Carte(ligne3, padx=14, pady=10)
-        jeu.grid(row=0, column=1, sticky="nsew", padx=5)
-        tk.Label(jeu, text=espacer("Jeu"), bg=CARTE, fg=GRIS, font=("Segoe UI", 8), anchor="w").pack(fill="x")
-        self.dash_jeu = tk.Label(jeu, text="Aucun jeu", bg=CARTE, fg=GRIS, font=("Segoe UI", 14, "bold"), anchor="w")
-        self.dash_jeu.pack(fill="x", pady=(4, 2))
-        self.dash_semaine = tk.Label(jeu, text="", bg=CARTE, fg=GRIS, font=("Segoe UI", 9), anchor="w")
-        self.dash_semaine.pack(fill="x")
-        self.dash_top = tk.Label(jeu, text="", bg=CARTE, fg=GRIS, font=("Segoe UI", 9), anchor="w")
-        self.dash_top.pack(fill="x")
-
-        musique = Carte(ligne3, padx=14, pady=10)
-        musique.grid(row=0, column=2, sticky="nsew", padx=(5, 0))
-        tk.Label(musique, text=espacer("Musique · Spotify"), bg=CARTE, fg=GRIS, font=("Segoe UI", 8),
-                 anchor="w").pack(fill="x")
-        self.dash_musique = tk.Label(musique, text="Rien en lecture", bg=CARTE, fg=GRIS, font=("Segoe UI", 11, "bold"),
-                                     anchor="w")
-        self.dash_musique.pack(fill="x", pady=(4, 0))
-        self.dash_artiste = tk.Label(musique, text="", bg=CARTE, fg=GRIS, font=("Segoe UI", 9), anchor="w")
-        self.dash_artiste.pack(fill="x")
-        boutons = tk.Frame(musique, bg=CARTE)
-        boutons.pack(fill="x", pady=(6, 0))
-        for col, (symbole, action) in enumerate((("⏮", "precedent"), ("⏯", "playpause"), ("⏭", "suivant"),
-                                                 ("🔉", "volmoins"), ("🔊", "volplus"))):
-            boutons.columnconfigure(col, weight=1, uniform="m")
-            tk.Button(boutons, text=symbole, relief="flat", bg="#15152a", fg=CYAN, activebackground=CYAN,
-                      activeforeground=FOND, font=("Segoe UI", 10), cursor="hand2", bd=0, highlightthickness=0,
-                      command=lambda a=action: touche_media(a)).grid(row=0, column=col, sticky="ew", padx=2, ipady=2)
-
-        # (ancien bouton micro : gardé invisible pour la compatibilité)
-        self.btn_micro = tk.Button(cadre)
-        self.titre_musique = None
-        self.micro_coupe = None
-        self.temps_disques = []
-        self.racine.after(1500, self.suivre_musique)
-        self.max = {"cpu": 0, "gpu": 0}
-        self.dernier_reseau = None
-        self.max_down = 0
-        self.racine.after(500, self.maj_temperatures)
-        self.racine.after(800, self.maj_disques_dash)
-
-    def maj_disques_dash(self):
-        """Place libre + température de chaque disque (toutes les 30 s)."""
-        def ensuite(lecteurs):
-            if isinstance(lecteurs, Exception):
-                lecteurs = []
-            temps = {}
-            for modele, t, lettre in self.temps_disques:
-                lettre = lettre or lettre_du_disque(modele)
-                if lettre:
-                    temps.setdefault(lettre, t)
-            a_surveiller = 0
-            for lettre, total, libre in lecteurs:
-                if lettre not in self.lignes_disques:
-                    l = tk.Frame(self.cadre_dash_disques, bg=CARTE)
-                    l.pack(fill="x", pady=2)
-                    tk.Label(l, text=f"{lettre}:", bg=CARTE, fg=TEXTE, font=("Segoe UI", 9, "bold"), width=3,
-                             anchor="w").pack(side="left")
-                    texte = tk.Label(l, text="", bg=CARTE, fg=GRIS, font=("Segoe UI", 9), width=17, anchor="e")
-                    texte.pack(side="right")
-                    barre = tk.Canvas(l, height=8, width=1, bg=CARTE, highlightthickness=0)
-                    barre.pack(side="left", fill="x", expand=True, padx=(2, 8))
-                    self.lignes_disques[lettre] = (barre, texte)
-                barre, texte = self.lignes_disques[lettre]
-                rempli = 1 - libre / total if total else 0
-                temp = temps.get(lettre)
-                couleur = ROUGE if rempli > 0.95 or (temp or 0) >= 70 else (ORANGE if rempli > 0.85 or (temp or 0) >= 60 else CYAN)
-                a_surveiller += couleur != CYAN
-                texte.config(text=f"{libre / 1e9:,.0f} Go libres".replace(",", " ") + (f" · {temp:.0f}°" if temp else ""))
-                barre.delete("all")
-                larg = max(barre.winfo_width(), 60)
-                barre.create_line(4, 4, larg - 4, 4, fill="#1c1c2c", width=6, capstyle="round")
-                barre.create_line(4, 4, 4 + (larg - 8) * rempli, 4, fill=couleur, width=6, capstyle="round")
-            self.disques_a_surveiller = a_surveiller
-            if lecteurs and not getattr(self, "sante_disques_connue", False):
-                ok = len(lecteurs) - a_surveiller
-                self.dash_disques.config(text=espacer(f"{ok} / {len(lecteurs)} OK"), fg=VERT if not a_surveiller else ORANGE)
-            self.racine.after(30000, self.maj_disques_dash)
-        self.en_fond(lecteurs_fixes, ensuite)
-
-    def maj_temperatures(self):
-        def ensuite(m):
-            if isinstance(m, Exception):
-                m = {"gpu": None, "ram": None, "cpu_temp": None, "cpu_usage": None, "disques": [], "hwinfo": False,
-                     "reseau": None}
-            soucis = []
-            t = self.tuiles
-            # Processeur (température via HWiNFO)
-            if m["cpu_temp"] is not None:
-                temp = m["cpu_temp"]
-                self.max["cpu"] = max(self.max["cpu"], temp)
-                etat, couleur = self.etat_temperature(temp, ALERTE_CPU)
-                if couleur != VERT:
-                    soucis.append(f"CPU {etat.lower()}")
-                charge = f"Charge {m['cpu_usage']:.0f} % · " if m["cpu_usage"] is not None else ""
-                self.remplir_tuile(t["cpu"], f"{temp:.0f}", "°C", f"{charge}max {self.max['cpu']:.0f} °C",
-                                   temp / 100, etat, couleur, ROUGE if couleur == ROUGE else None)
-            else:
-                charge = f"Charge {m['cpu_usage']:.0f} % · " if m.get("cpu_usage") is not None else ""
-                self.remplir_tuile(t["cpu"], "--", "°C", charge + "HWiNFO nécessaire", 0, "?", GRIS, GRIS)
-            # Carte graphique (nvidia-smi)
-            if m["gpu"]:
-                temp, util, vram, watts = m["gpu"]
-                self.max["gpu"] = max(self.max["gpu"], temp)
-                etat, couleur = self.etat_temperature(temp, ALERTE_GPU)
-                if couleur != VERT:
-                    soucis.append(f"GPU {etat.lower()}")
-                self.remplir_tuile(t["gpu"], f"{temp:.0f}", "°C", f"Charge {util} % · {watts:.0f} W",
-                                   temp / 100, etat, couleur, ROUGE if couleur == ROUGE else None)
-                self.vram = vram
-            else:
-                self.remplir_tuile(t["gpu"], "--", "°C", "nvidia-smi introuvable", 0, "?", GRIS, GRIS)
-            # Mémoire
-            if m["ram"]:
-                utilise, total = m["ram"]
-                pct = utilise / total * 100
-                couleur = ROUGE if pct >= 90 else (ORANGE if pct >= 80 else VERT)
-                if couleur != VERT:
-                    soucis.append("mémoire presque pleine")
-                vram = getattr(self, "vram", None)
-                self.remplir_tuile(t["ram"], f"{utilise:.1f}".replace(".", ","), f"/ {total:.0f} Go",
-                                   f"VRAM {vram / 1024:.1f} Go utilisés".replace(".", ",") if vram else "",
-                                   pct / 100, f"{pct:.0f} %", couleur)
-                t["ram"]["jauge"](pct / 100, VIOLET)
-            # Connexion : on compare avec le relevé d'il y a 2 s
-            vitesse = debit(self.dernier_reseau, m.get("reseau"))
-            self.dernier_reseau = m.get("reseau") or self.dernier_reseau
-            if vitesse:
-                down, up = vitesse
-                self.max_down = max(self.max_down, down)
-                self.remplir_tuile(t["net"], f"{down:.1f}".replace(".", ",") if down < 10 else f"{down:.0f}",
-                                   "Mbit/s ↓", f"↑ {up:.1f} Mbit/s envoi".replace(".", ","),
-                                   down / max(self.max_down, 50), "Active" if down + up > 0.2 else "Calme", VERT)
-                t["net"]["jauge"](down / max(self.max_down, 50), VERT)
-            elif m.get("reseau") is None:
-                self.remplir_tuile(t["net"], "--", "Mbit/s", "mesure impossible", 0, "?", GRIS, GRIS)
-            # Disques (températures HWiNFO) et conseil HWiNFO
-            if m["disques"]:
-                self.temps_disques = m["disques"]
-                for _, temp, lettre in m["disques"]:
-                    if temp >= 60:
-                        soucis.append(f"disque {lettre or ''} chaud".replace("  ", " "))
-            if not m["hwinfo"]:
-                self.astuce_hwinfo.config(text="ⓘ Température CPU : lance LibreHardwareMonitor (serveur web activé) "
-                                               "ou HWiNFO avec « Shared Memory Support » coché.")
-                self.astuce_hwinfo.pack(fill="x")
-            else:
-                self.astuce_hwinfo.pack_forget()
-            if getattr(self, "disques_a_surveiller", 0):
-                soucis.append("disque à surveiller")
-            self.afficher_pastille(soucis)
-            # Actions rapides : profil actif
-            self.info_profil_dash.config(text=f"{REGLAGES.get('profil_actif') or 'aucun'} ▾")
-            self.dernieres_mesures = m
-            self.derniere_vitesse = vitesse or getattr(self, "derniere_vitesse", None)
-            self.noter("cpu_max", m["cpu_temp"])
-            self.noter("gpu_max", m["gpu"][0] if m["gpu"] else None)
-            self.historique["cpu"].append(m["cpu_temp"])
-            self.historique["gpu"].append(m["gpu"][0] if m["gpu"] else None)
-            self.dessiner_graphique()
-            if any(c == ROUGE for c in (t["cpu"]["valeur"].cget("fg"), t["gpu"]["valeur"].cget("fg"))):
-                self.racine.bell()
-            self.racine.after(2000, self.maj_temperatures)   # et on recommence dans 2 s
-        self.en_fond(lire_tout, ensuite)
-
-    @staticmethod
-    def etat_temperature(temp, alerte):
-        """Un mot simple + sa couleur pour une température."""
-        if temp >= alerte:
-            return "Brûlant", ROUGE
-        if temp >= alerte - 10:
-            return "Chaud", ORANGE
-        return "Normal", VERT
-
-    def afficher_pastille(self, soucis):
-        """La pastille en haut : « Tout va bien » ou le premier souci."""
-        if not soucis:
-            texte, couleur = "✓  Tout va bien", VERT
-        else:
-            texte = "⚠  " + soucis[0][0].upper() + soucis[0][1:] + (f"  (+{len(soucis) - 1})" if len(soucis) > 1 else "")
-            couleur = ORANGE
-        self.pastille.config(text=texte, fg=couleur, bg=melanger(FOND, couleur, 0.12))
-
-    def dessiner_graphique(self):
-        c = self.graphique
-        c.delete("all")   # on efface et on redessine tout
-        larg, haut = max(c.winfo_width(), 200), max(c.winfo_height(), 120)
-        gauche, droite, bas, mini, maxi = 34, max(c.winfo_width(), 200) - 8, haut - 20, 20, 100
-
-        def y(temp):
-            temp = min(max(temp, mini), maxi)
-            return bas - (temp - mini) / (maxi - mini) * (bas - 8)
-
-        for t in (20, 40, 60, 80, 100):   # lignes repères
-            c.create_line(gauche, y(t), droite, y(t), fill="#16162a")
-            c.create_text(gauche - 6, y(t), text=f"{t}°", fill=GRIS, anchor="e", font=("Segoe UI", 8))
-        # ligne d'alerte en pointillés
-        c.create_line(gauche, y(ALERTE_GPU), droite, y(ALERTE_GPU), fill=melanger(CARTE, ORANGE, 0.6), dash=(4, 4))
-        self.legende_alerte.config(text=f"┄ alerte {ALERTE_GPU}°")
-        # repères de temps
-        for texte, x, ancre in (("-10 min", gauche, "w"), ("-5 min", (gauche + droite) / 2, "center"),
-                                ("maintenant", droite, "e")):
-            c.create_text(x, haut - 6, text=texte, fill=GRIS, anchor=ancre, font=("Segoe UI", 8))
-        pas = (droite - gauche) / 299
-        for cle, couleur in (("cpu", CYAN), ("gpu", ROSE)):
-            valeurs = list(self.historique[cle])
-            depart = 300 - len(valeurs)   # les nouvelles valeurs arrivent par la droite
-            morceaux, points = [], []
-            for i, v in enumerate(valeurs):
-                if v is None:   # trou dans les mesures : on coupe la ligne
-                    morceaux.append(points)
-                    points = []
-                    continue
-                points += [gauche + (depart + i) * pas, y(v)]
-            morceaux.append(points)
-            for pts in morceaux:
-                if len(pts) >= 4:
-                    for largeur, force in ((12, 0.06), (8, 0.13), (5, 0.25)):
-                        c.create_line(pts, fill=melanger(CARTE, couleur, force), width=largeur, smooth=True,
-                                      capstyle="round", joinstyle="round", splinesteps=24)
-                    c.create_line(pts, fill=couleur, width=2.5, smooth=True, capstyle="round", splinesteps=24)
-            if valeurs and valeurs[-1] is not None:   # un point sur la valeur actuelle
-                x, yy = gauche + 299 * pas, y(valeurs[-1])
-                c.create_oval(x - 4, yy - 4, x + 4, yy + 4, fill=couleur, outline="")
-
-
-    # ---------- 🎮 LANCEUR GAMING ----------
-
-    def onglet_gaming(self, cadre):
-        self.texte(cadre, "Session gaming", 13, gras=True)
-        self.texte(cadre, "Ferme les applis inutiles, passe le PC en mode Performances, lance Discord et le jeu.",
-                   couleur=GRIS)
-        zone = tk.Frame(cadre, bg=CARTE)
-        zone.pack(fill="x", pady=4)
-        self.liste_jeux = tk.Listbox(zone, height=9, bg=FOND, fg=TEXTE, selectbackground=ACCENT, selectforeground=FOND,
-                                     relief="flat", highlightthickness=0, font=("Segoe UI", 11), activestyle="none")
-        barre = tk.Scrollbar(zone, command=self.liste_jeux.yview)
-        self.liste_jeux.config(yscrollcommand=barre.set)
-        self.liste_jeux.pack(side="left", fill="x", expand=True)
-        barre.pack(side="left", fill="y")
-        self.liste_jeux.bind("<Double-1>", lambda e: self.lancer())
-        boutons = tk.Frame(cadre, bg=CARTE)
-        boutons.pack(fill="x")
-        self.btn_lancer = self.bouton(boutons, "🚀 Lancer la session", self.lancer, VERT)
-        self.btn_lancer.pack(side="left", padx=(0, 8))
-        self.btn_fini = self.bouton(boutons, "✅ J'ai fini de jouer", self.fin_session)
-        self.btn_fini.pack(side="left", padx=(0, 8))
-        self.btn_fini.config(state="disabled")
-        self.bouton(boutons, "🔄", self.charger_jeux, CARTE).pack(side="left")
-        self.info_gaming = self.texte(cadre, "", couleur=GRIS)
-        self.info_gaming.config(wraplength=680)
-        self.charger_jeux()
-
-    def charger_jeux(self):
-        def ensuite(jeux):
-            if isinstance(jeux, Exception) or not jeux:
-                jeux = JEUX_SECOURS
-                self.info_gaming.config(text="Steam pas trouvé : je montre ta liste de secours.")
-            else:
-                self.info_gaming.config(text=f"{len(jeux)} jeux Steam trouvés. Double-clic sur un jeu pour le lancer.")
-            self.jeux = jeux
-            self.liste_jeux.delete(0, "end")
-            for nom in jeux:
-                self.liste_jeux.insert("end", "  " + nom)
-            self.liste_jeux.selection_set(0)
-        self.en_fond(jeux_steam, ensuite)
-
-    def lancer(self):
-        choix = self.liste_jeux.curselection()
-        if not choix or self.session:
-            return
-        jeu = list(self.jeux)[choix[0]]
-        self.btn_lancer.config(state="disabled")
-        self.info_gaming.config(text="Préparation...", fg=GRIS)
-
-        def travail():
-            session = {"jeu": jeu, "applis": {}, "plan": None}
-            # 1) On note où sont les applis, puis on les ferme
-            chemins = chemins_applis(APPS_A_FERMER)
-            for exe, chemin in chemins.items():
-                res = subprocess.run(["taskkill", "/IM", exe, "/F"], capture_output=True,
-                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                if res.returncode == 0:
-                    session["applis"][exe] = chemin
-            # 2) Plan d'alimentation Performances
-            if REGLAGES["mode_performances"]:
-                avant = plan_actif()
-                if avant and activer_plan("SCHEME_MIN"):
-                    session["plan"] = avant
-            # 3) Discord + le jeu
-            discord = Path(LOCALAPPDATA) / "Discord" / "Update.exe"
-            if discord.exists():
-                subprocess.Popen([str(discord), "--processStart", "Discord.exe"])
-            os.startfile(f"steam://rungameid/{self.jeux[jeu]}")
-            return session
-
-        def ensuite(session):
-            if isinstance(session, Exception):
-                self.info_gaming.config(text=f"Erreur : {session}", fg=ROUGE)
-                self.btn_lancer.config(state="normal")
-                return
-            self.session = session
-            fermees = ", ".join(session["applis"]) or "aucune"
-            perf = "mode Performances ✓" if session["plan"] else "plan d'alim inchangé"
-            self.info_gaming.config(text=f"🚀 {jeu} se lance · applis fermées : {fermees} · {perf}. Bon jeu !", fg=TEXTE)
-            self.btn_fini.config(state="normal")
-        self.en_fond(travail, ensuite)
-
-    def fin_session(self):
-        if not self.session:
-            return
-        for exe, chemin in self.session["applis"].items():
-            if Path(chemin).exists():
-                subprocess.Popen([chemin])
-        if self.session["plan"]:
-            activer_plan(self.session["plan"])   # on remet ton plan d'avant
-        self.session = None
-        self.info_gaming.config(text="👍 Tout est remis comme avant (applis et plan d'alimentation).", fg=GRIS)
-        self.btn_fini.config(state="disabled")
-        self.btn_lancer.config(state="normal")
-
-    # ---------- 📂 RANGEUR ----------
-
-    def onglet_rangeur(self, cadre):
-        self.texte(cadre, "Ranger les fichiers", 13, gras=True)
-        self.info_dossier_rangeur = self.texte(cadre, f"Dossier : {DOSSIER_A_RANGER}", couleur=GRIS)
-        self.apercu = self.texte(cadre, "Clique sur Aperçu pour voir ce qui sera rangé.")
-        self.bouton(cadre, "🔍 Aperçu", self.voir_apercu)
-        self.btn_ranger = self.bouton(cadre, "📂 Ranger", self.lancer_rangement, VERT)
-        self.btn_ranger.config(state="disabled")
-        self.plan = {}
-
-    def voir_apercu(self):
-        self.plan = plan_rangement()
-        if not self.plan:
-            self.apercu.config(text="Rien à ranger, c'est déjà propre ✨")
-            self.btn_ranger.config(state="disabled")
-            return
-        lignes = [f"{cat} : {len(liste)} fichier(s)" for cat, liste in sorted(self.plan.items())]
-        self.apercu.config(text="\n".join(lignes))
-        self.btn_ranger.config(state="normal")
-
-    def lancer_rangement(self):
-        total = sum(len(l) for l in self.plan.values())
-        if messagebox.askyesno("Ranger", f"Ranger ces {total} fichiers dans des sous-dossiers ?"):
-            n = ranger(self.plan)
-            self.apercu.config(text=f"✅ {n} fichier(s) rangé(s) !")
-            self.btn_ranger.config(state="disabled")
-
-    # ---------- 🔔 ALERTE PRIX ----------
-
-    def onglet_prix(self, cadre):
-        self.texte(cadre, "Alerte prix", 13, gras=True)
-        self.texte(cadre, "Lien de la page du produit :", couleur=GRIS)
-        self.champ_url = tk.Entry(cadre, bg=FOND, fg=TEXTE, insertbackground=TEXTE, relief="flat",
-                                  font=("Segoe UI", 10))
-        self.champ_url.pack(fill="x", ipady=5)
-        self.texte(cadre, "Prévenir quand le prix passe sous (€) :", couleur=GRIS)
-        self.champ_cible = tk.Entry(cadre, bg=FOND, fg=TEXTE, insertbackground=TEXTE, relief="flat",
-                                    font=("Segoe UI", 10), width=12)
-        self.champ_cible.pack(anchor="w", ipady=5)
-        self.btn_surveiller = self.bouton(cadre, "🔔 Surveiller", self.basculer_surveillance)
-        self.info_prix = self.texte(cadre, "", 11)
-        self.surveillance = False
-        self.prochaine_verif = None
-
-    def basculer_surveillance(self):
-        if self.surveillance:
-            self.surveillance = False
-            if self.prochaine_verif:
-                self.racine.after_cancel(self.prochaine_verif)   # annule la vérif prévue
-                self.prochaine_verif = None
-            self.btn_surveiller.config(text="🔔 Surveiller", bg=ACCENT)
-            self.info_prix.config(text="Surveillance arrêtée.")
-            return
-        try:
-            self.cible = float(self.champ_cible.get().replace(",", "."))
-        except ValueError:
-            messagebox.showwarning("Alerte prix", "Le prix cible doit être un nombre.")
-            return
-        self.url = self.champ_url.get().strip()
-        if not self.url.startswith("http"):
-            messagebox.showwarning("Alerte prix", "Colle un lien qui commence par http.")
-            return
-        self.surveillance = True
-        self.btn_surveiller.config(text="⏹ Arrêter", bg=ROUGE)
-        self.verifier_prix()
-
-    def verifier_prix(self):
-        if not self.surveillance:
-            return
-        self.info_prix.config(text="Vérification du prix...")
-
-        def ensuite(prix):
-            if not self.surveillance:
-                return
-            heure = time.strftime("%H:%M")
-            if isinstance(prix, Exception):
-                self.info_prix.config(text=f"[{heure}] Page illisible : {prix}")
-            elif prix is None:
-                self.info_prix.config(text=f"[{heure}] Pas de prix trouvé (le site bloque peut-être les scripts).")
-            elif prix <= self.cible:
-                self.info_prix.config(text=f"[{heure}] 🎉 {prix:.2f} € : prix atteint !", fg=VERT)
-                self.basculer_surveillance()
-                self.racine.bell()
-                self.montrer()   # si la fenêtre était cachée près de l'horloge
-                messagebox.showinfo("Alerte prix 🎉", f"Prix atteint : {prix:.2f} €\n\n{self.url}")
-                return
-            else:
-                self.info_prix.config(
-                    text=f"[{heure}] {prix:.2f} € (cible {self.cible:.2f} €). Prochaine vérif dans {MINUTES_ENTRE_PRIX} min.",
-                    fg=TEXTE)
-            self.prochaine_verif = self.racine.after(MINUTES_ENTRE_PRIX * 60 * 1000, self.verifier_prix)
-        self.en_fond(lambda: trouver_prix(self.url), ensuite)
-
-
 # =============================================================
 #  DÉMARRAGE
 # =============================================================
-
-# La suite de la classe BoiteAOutils : l'onglet Temps de jeu.
-
-def onglet_temps_de_jeu(self, cadre):
-    self.texte(cadre, "Temps de jeu", 13, gras=True)
-    self.info_jeu_actuel = self.texte(cadre, "", 11)
-    self.info_totaux = self.texte(cadre, "", 11)
-    self.texte(cadre, "Par jeu, sur les 7 derniers jours", 10, GRIS, True)
-    self.graph_jeux = tk.Canvas(cadre, bg=FOND, height=170, highlightthickness=0)
-    self.graph_jeux.pack(fill="x", pady=(2, 8))
-    self.texte(cadre, "Par jour", 10, GRIS, True)
-    self.graph_jours = tk.Canvas(cadre, bg=FOND, height=120, highlightthickness=0)
-    self.graph_jours.pack(fill="x", pady=2)
-    self.texte(cadre, "Le suivi marche tant que la boîte à outils est ouverte (ou rangée près de l'horloge).",
-               9, GRIS)
-    self.temps = charger_temps()
-    self.jeu_actuel, self.debut_jeu, self.dernier_releve = None, None, time.time()
-    self.racine.after(1500, self.suivre_jeu)
-    # Quand l'onglet s'affiche (ou change de taille), on redessine les graphiques à la bonne largeur
-    self.graph_jeux.bind("<Configure>", lambda e: self.afficher_temps())
-    self.graph_jours.bind("<Configure>", lambda e: self.afficher_temps())
-
-
-def suivre_jeu(self):
-    """Toutes les 30 s : quel jeu tourne ? On ajoute le temps écoulé à ce jeu."""
-    def ensuite(jeu):
-        maintenant = time.time()
-        ecoule = min(maintenant - self.dernier_releve, 60)   # max 60 s (si le PC était en veille)
-        self.dernier_releve = maintenant
-        if isinstance(jeu, Exception):
-            jeu = None
-        if jeu and jeu == self.jeu_actuel:
-            jour = time.strftime("%Y-%m-%d")
-            self.temps.setdefault(jour, {})
-            self.temps[jour][jeu] = self.temps[jour].get(jeu, 0) + ecoule
-            try:
-                DOSSIER_APPLI.mkdir(parents=True, exist_ok=True)
-                FICHIER_TEMPS.write_text(json.dumps(self.temps, indent=1, ensure_ascii=False), encoding="utf-8")
-            except OSError:
-                pass
-        if jeu != self.jeu_actuel:
-            self.jeu_actuel, self.debut_jeu = jeu, maintenant
-        self.afficher_temps()
-        self.racine.after(30 * 1000, self.suivre_jeu)
-    self.en_fond(lambda: jeu_en_cours(getattr(self, "jeux", {})), ensuite)
-
-
-def afficher_temps(self):
-    if self.jeu_actuel:
-        self.info_jeu_actuel.config(text=f"🎮 En ce moment : {self.jeu_actuel} "
-                                         f"(depuis {duree_lisible(time.time() - self.debut_jeu)})", fg=VERT)
-    else:
-        self.info_jeu_actuel.config(text="💤 Aucun jeu lancé", fg=GRIS)
-
-    # Les 7 derniers jours, du plus ancien au plus récent
-    jours = [time.strftime("%Y-%m-%d", time.localtime(time.time() - i * 86400)) for i in range(6, -1, -1)]
-    par_jeu, par_jour = {}, []
-    for jour in jours:
-        total = 0
-        for jeu, sec in self.temps.get(jour, {}).items():
-            par_jeu[jeu] = par_jeu.get(jeu, 0) + sec
-            total += sec
-        par_jour.append(total)
-    self.info_totaux.config(text=f"Aujourd'hui : {duree_lisible(par_jour[-1])}   ·   "
-                                 f"7 derniers jours : {duree_lisible(sum(par_jour))}")
-    # Et sur le tableau de bord
-    if self.jeu_actuel:
-        self.dash_jeu.config(text=f"{self.jeu_actuel} · {duree_lisible(time.time() - self.debut_jeu)}", fg=CYAN)
-    else:
-        self.dash_jeu.config(text="Aucun jeu", fg=GRIS)
-    self.dash_semaine.config(text=f"7 derniers jours : {duree_lisible(sum(par_jour))}")
-    if par_jeu:
-        top = max(par_jeu, key=par_jeu.get)
-        self.dash_top.config(text=f"Le plus joué : {top}")
-
-    # Graphique 1 : une barre horizontale par jeu (les 5 plus joués)
-    c = self.graph_jeux
-    c.delete("all")
-    larg = max(c.winfo_width(), 300)
-    classement = sorted(par_jeu.items(), key=lambda j: j[1], reverse=True)[:5]
-    if not classement:
-        c.create_text(larg / 2, 85, text="Pas encore de partie enregistrée. Lance un jeu !", fill=GRIS,
-                      font=("Segoe UI", 10))
-    plus_long = max([sec for _, sec in classement], default=1)
-    couleurs = [CYAN, ROSE, VIOLET, VERT, ORANGE]
-    for i, (jeu, sec) in enumerate(classement):
-        y = 14 + i * 31
-        c.create_text(10, y + 9, text=jeu[:22], fill=TEXTE, anchor="w", font=("Segoe UI", 10))
-        fin = 190 + (larg - 290) * sec / plus_long
-        c.create_rectangle(190, y, fin, y + 18, fill=couleurs[i], width=0)
-        c.create_text(fin + 8, y + 9, text=duree_lisible(sec), fill=GRIS, anchor="w", font=("Segoe UI", 9))
-
-    # Graphique 2 : une colonne par jour
-    c = self.graph_jours
-    c.delete("all")
-    larg = max(c.winfo_width(), 300)
-    plus_long = max(par_jour + [3600])
-    pas = (larg - 20) / 7
-    noms_jours = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
-    for i, (jour, sec) in enumerate(zip(jours, par_jour)):
-        x = 10 + i * pas
-        haut = (120 - 40) * sec / plus_long
-        c.create_rectangle(x + pas * 0.2, 98 - haut, x + pas * 0.8, 98, fill=VIOLET if i < 6 else CYAN, width=0)
-        nom = noms_jours[time.strptime(jour, "%Y-%m-%d").tm_wday]
-        c.create_text(x + pas / 2, 110, text=nom, fill=GRIS, font=("Segoe UI", 9))
-        if sec >= 60:
-            c.create_text(x + pas / 2, 90 - haut, text=duree_lisible(sec), fill=TEXTE, font=("Segoe UI", 8))
-
-
-BoiteAOutils.onglet_temps_de_jeu = onglet_temps_de_jeu
-BoiteAOutils.suivre_jeu = suivre_jeu
-BoiteAOutils.afficher_temps = afficher_temps
-
-
-# La suite de la classe BoiteAOutils : l'onglet Santé (mises à jour + disques).
-
-def onglet_sante(self, cadre):
-    self.texte(cadre, "Mises à jour", 13, gras=True)
-    ligne = tk.Frame(cadre, bg=CARTE)
-    ligne.pack(fill="x")
-    self.info_pilote = tk.Label(ligne, text="Pilote NVIDIA : vérification...", bg=CARTE, fg=TEXTE,
-                                font=("Segoe UI", 10), anchor="w")
-    self.info_pilote.pack(side="left")
-    self.btn_pilote = tk.Button(ligne, text="⬇️ Télécharger", relief="flat", bg=VERT, fg=FOND,
-                                font=("Segoe UI", 9, "bold"), cursor="hand2")
-    self.lien_pilote = PAGE_PILOTES_NVIDIA
-    self.btn_pilote.config(command=lambda: os.startfile(self.lien_pilote))
-
-    self.liste_maj = tk.Listbox(cadre, height=5, bg=FOND, fg=TEXTE, selectbackground=ACCENT, selectforeground=FOND, relief="flat",
-                                highlightthickness=0, font=("Segoe UI", 10), activestyle="none",
-                                selectmode="extended")
-    self.liste_maj.pack(fill="x", pady=(6, 2))
-    boutons = tk.Frame(cadre, bg=CARTE)
-    boutons.pack(fill="x")
-    self.bouton(boutons, "🔍 Vérifier", lambda: (self.verifier_maj(), self.verifier_pilotes())).pack(side="left", padx=(0, 8))
-    self.btn_maj = self.bouton(boutons, "⬆️ Mettre à jour la sélection", self.lancer_maj, VERT)
-    self.btn_maj.pack(side="left")
-    self.btn_maj.config(state="disabled")
-    self.info_maj = self.texte(cadre, "", 9, GRIS)
-
-    # Autres pilotes + carte mère
-    ligne_wu = tk.Frame(cadre, bg=CARTE)
-    ligne_wu.pack(fill="x", pady=(6, 0))
-    self.info_pilotes = tk.Label(ligne_wu, text="Autres pilotes : vérification via Windows Update...", bg=CARTE,
-                                 fg=TEXTE, font=("Segoe UI", 10), anchor="w", justify="left", wraplength=560)
-    self.info_pilotes.pack(side="left")
-    tk.Button(ligne_wu, text="🪟 Windows Update", relief="flat", bg=ACCENT, fg=FOND, font=("Segoe UI", 9, "bold"),
-              cursor="hand2", command=lambda: os.startfile("ms-settings:windowsupdate-optionalupdates")).pack(side="right")
-    ligne_msi = tk.Frame(cadre, bg=CARTE)
-    ligne_msi.pack(fill="x", pady=(4, 0))
-    bios = version_bios()
-    texte_bios = f"Carte mère MSI PRO B760-P : BIOS {bios[0]} du {bios[1]}" if bios else "Carte mère MSI PRO B760-P"
-    tk.Label(ligne_msi, text=texte_bios + "  (compare avec la page MSI)", bg=CARTE, fg=TEXTE,
-             font=("Segoe UI", 10), anchor="w").pack(side="left")
-    tk.Button(ligne_msi, text="🌐 Page MSI", relief="flat", bg=ACCENT, fg=FOND, font=("Segoe UI", 9, "bold"),
-              cursor="hand2", command=lambda: os.startfile(PAGE_MSI)).pack(side="right")
-    self.racine.after(5000, self.verifier_pilotes)
-
-    self.texte(cadre, "Santé des disques", 13, gras=True).pack_configure(pady=(10, 2))
-    self.cadre_disques = tk.Frame(cadre, bg=CARTE)
-    self.cadre_disques.pack(fill="x")
-    self.bouton(cadre, "🔄 Revérifier les disques", self.verifier_disques)
-    self.applis_maj = []
-    self.racine.after(3000, self.verifier_maj)
-    self.racine.after(4000, self.verifier_disques)
-
-
-def verifier_maj(self):
-    self.info_maj.config(text="Je demande à Windows quelles applis ont une mise à jour (ça peut prendre 30 s)...")
-
-    def travail():
-        installe = version_pilote_nvidia()
-        try:
-            dernier, lien = dernier_pilote_nvidia()
-        except Exception:
-            dernier, lien = None, PAGE_PILOTES_NVIDIA
-        try:
-            applis = applis_a_mettre_a_jour()
-        except (OSError, subprocess.TimeoutExpired):
-            applis = None
-        return installe, dernier, lien, applis
-
-    def ensuite(res):
-        if isinstance(res, Exception):
-            self.info_maj.config(text=f"Erreur : {res}")
-            return
-        installe, dernier, self.lien_pilote, applis = res
-        self.btn_pilote.pack_forget()
-        if installe and dernier:
-            try:
-                a_jour = float(installe) >= float(dernier)
-            except ValueError:
-                a_jour = installe == dernier
-            if a_jour:
-                self.info_pilote.config(text=f"✅ Pilote NVIDIA à jour ({installe})", fg=VERT)
-            else:
-                self.info_pilote.config(text=f"🆕 Nouveau pilote NVIDIA : {dernier} (tu as {installe})  ", fg=ORANGE)
-                self.btn_pilote.pack(side="left")
-        else:
-            self.info_pilote.config(text=f"Pilote NVIDIA : {installe or '?'} (impossible de vérifier en ligne)  ",
-                                    fg=TEXTE)
-            self.btn_pilote.config(text="🌐 Page des pilotes")
-            self.btn_pilote.pack(side="left")
-        self.liste_maj.delete(0, "end")
-        if applis is None:
-            self.info_maj.config(text="winget introuvable : il s'installe avec « Programme d'installation "
-                                      "d'application » dans le Microsoft Store.")
-            return
-        self.applis_maj = applis
-        for a in applis:
-            self.liste_maj.insert("end", f"  {a['nom']}   {a['version']} → {a['dispo']}")
-        if applis:
-            self.info_maj.config(text=f"{len(applis)} appli(s) à mettre à jour. Sélectionne-les (Ctrl+clic pour "
-                                      f"plusieurs) puis clique sur Mettre à jour.")
-            self.btn_maj.config(state="normal")
-        else:
-            self.info_maj.config(text="✅ Toutes tes applis sont à jour.")
-            self.btn_maj.config(state="disabled")
-    self.en_fond(travail, ensuite)
-
-
-def lancer_maj(self):
-    choisies = [self.applis_maj[i] for i in self.liste_maj.curselection()]
-    if not choisies:
-        self.info_maj.config(text="Sélectionne d'abord une ou plusieurs applis 👆")
-        return
-    noms = ", ".join(a["nom"] for a in choisies)
-    if not messagebox.askyesno("Mises à jour", f"Mettre à jour : {noms} ?\n\n"
-                                               "Certaines applis demanderont l'accès admin, et il vaut mieux "
-                                               "les fermer avant."):
-        return
-    self.btn_maj.config(state="disabled")
-    self.info_maj.config(text=f"Mise à jour en cours : {noms}... (laisse tourner)")
-
-    def travail():
-        return [(a["nom"], mettre_a_jour(a["id"])) for a in choisies]
-
-    def ensuite(res):
-        if isinstance(res, Exception):
-            self.info_maj.config(text=f"Erreur : {res}")
-            return
-        ok = [n for n, r in res if r]
-        self.noter("maj", len(ok), "somme")
-        rate = [n for n, r in res if not r]
-        texte = (f"✅ À jour : {', '.join(ok)}. " if ok else "") + (f"❌ Raté : {', '.join(rate)}." if rate else "")
-        self.verifier_maj()
-        self.racine.after(200, lambda: self.info_maj.config(text=texte))
-    self.en_fond(travail, ensuite)
-
-
-def verifier_disques(self):
-    for w in self.cadre_disques.winfo_children():
-        w.destroy()
-    tk.Label(self.cadre_disques, text="Analyse...", bg=CARTE, fg=GRIS, font=("Segoe UI", 10)).pack(anchor="w")
-
-    def ensuite(disques):
-        for w in self.cadre_disques.winfo_children():
-            w.destroy()
-        if isinstance(disques, Exception) or not disques:
-            tk.Label(self.cadre_disques, text="Impossible de lire les disques.", bg=CARTE, fg=GRIS,
-                     font=("Segoe UI", 10)).pack(anchor="w")
-            return
-        nb_ok = 0
-        for d in disques:
-            probleme = d["panne"] or d["sante"] not in ("Healthy", None) or (d["vie"] is not None and d["vie"] < 20)
-            fatigue = d["vie"] is not None and d["vie"] < 50
-            icone, couleur = ("⚠️", ROUGE) if probleme else (("🟠", ORANGE) if fatigue else ("✅", VERT))
-            nb_ok += not probleme
-            morceaux = [f"{d['nom']} ({d['type']}, {d['taille'] / 1e9:.0f} Go)"]
-            morceaux.append("bon état" if not probleme else "PROBLÈME : sauvegarde tes fichiers !")
-            if d["vie"] is not None:
-                morceaux.append(f"vie restante {d['vie']:.0f} %")
-            if d["temp"] is not None:
-                morceaux.append(f"{d['temp']:.0f} °C")
-            if d["ecrit"]:
-                valeur, unite = d["ecrit"]
-                morceaux.append(f"{valeur:,.0f} {unite} écrits".replace(",", " "))
-            tk.Label(self.cadre_disques, text=f"{icone}  " + "  ·  ".join(morceaux), bg=CARTE, fg=couleur,
-                     font=("Segoe UI", 10), anchor="w").pack(fill="x", pady=1)
-        self.sante_disques_connue = True
-        self.dash_disques.config(text=espacer(f"{nb_ok} / {len(disques)} OK"), fg=VERT if nb_ok == len(disques) else ROUGE)
-        if not any(d["vie"] is not None for d in disques):
-            tk.Label(self.cadre_disques, text="Pour l'usure des SSD : active « Shared Memory Support » dans HWiNFO.",
-                     bg=CARTE, fg=GRIS, font=("Segoe UI", 9), anchor="w").pack(fill="x")
-    self.en_fond(etat_disques, ensuite)
-
-
-def verifier_pilotes(self):
-    def ensuite(pilotes):
-        if isinstance(pilotes, Exception):
-            self.info_pilotes.config(text=f"Autres pilotes : impossible de demander à Windows Update ({pilotes})", fg=GRIS)
-        elif pilotes:
-            liste = "\n".join("   • " + p[:80] for p in pilotes[:6])
-            self.info_pilotes.config(text=f"🆕 {len(pilotes)} pilote(s) dispo dans Windows Update "
-                                          f"(Mises à jour facultatives) :\n{liste}", fg=ORANGE)
-        else:
-            self.info_pilotes.config(text="✅ Autres pilotes : rien de nouveau dans Windows Update", fg=VERT)
-    self.en_fond(pilotes_windows_update, ensuite)
-
-
-BoiteAOutils.verifier_pilotes = verifier_pilotes
-BoiteAOutils.onglet_sante = onglet_sante
-BoiteAOutils.verifier_maj = verifier_maj
-BoiteAOutils.lancer_maj = lancer_maj
-BoiteAOutils.verifier_disques = verifier_disques
-
-
-# La suite de la classe BoiteAOutils : l'onglet Réglages.
-# (On peut ajouter une fonction à une classe après coup.)
-
-def onglet_reglages(self, cadre):
-    self.texte(cadre, "Réglages", 13, gras=True)
-    grille = tk.Frame(cadre, bg=CARTE)
-    grille.pack(fill="x", pady=4)
-    self.champs_reglages = {}
-    lignes = [
-        ("dossier_medal", "Dossier des clips Medal", True),
-        ("jours_clips", "Clips Medal : supprimer après (jours)", False),
-        ("dossier_a_ranger", "Dossier à ranger", True),
-        ("alerte_cpu", "Alerte température CPU (°C)", False),
-        ("alerte_gpu", "Alerte température GPU (°C)", False),
-        ("apps_a_fermer", "Applis à fermer pour jouer (séparées par des virgules)", False),
-        ("minutes_entre_prix", "Alerte prix : vérifier toutes les (minutes)", False),
-        ("verrou_minutes", "Coffre : verrouiller après (minutes)", False),
-    ]
-    for i, (cle, titre, dossier) in enumerate(lignes):
-        tk.Label(grille, text=titre, bg=CARTE, fg=GRIS, font=("Segoe UI", 10), anchor="w").grid(
-            row=i, column=0, sticky="w", pady=3, padx=(0, 10))
-        champ = tk.Entry(grille, bg=FOND, fg=TEXTE, insertbackground=TEXTE, relief="flat",
-                         font=("Segoe UI", 10), width=26 if dossier or cle == "apps_a_fermer" else 8)
-        valeur = REGLAGES[cle]
-        champ.insert(0, ", ".join(valeur) if isinstance(valeur, list) else str(valeur))
-        champ.grid(row=i, column=1, sticky="w", ipady=3)
-        if dossier:   # petit bouton pour choisir un dossier
-            def choisir(c=champ):
-                choix = filedialog.askdirectory(initialdir=c.get() or str(Path.home()))
-                if choix:
-                    c.delete(0, "end")
-                    c.insert(0, str(Path(choix)))
-            tk.Button(grille, text="📁", command=choisir, relief="flat", bg=FOND, fg=TEXTE).grid(row=i, column=2, padx=4)
-        self.champs_reglages[cle] = champ
-
-    self.cases_reglages = {}
-    for cle, titre in [("mode_performances", "Passer en mode Performances pendant les sessions gaming"),
-                       ("fermer_vers_icone", "La croix range la fenêtre près de l'horloge (au lieu de quitter)"),
-                       ("demarrage_windows", "Lancer la boîte à outils au démarrage de Windows"),
-                       ("maj_auto", "Installer les mises à jour toute seule au démarrage")]:
-        var = tk.BooleanVar(value=REGLAGES.get(cle, True))
-        tk.Checkbutton(cadre, text=titre, variable=var, bg=CARTE, fg=TEXTE, selectcolor=FOND,
-                       activebackground=CARTE, activeforeground=TEXTE, font=("Segoe UI", 10), anchor="w",
-                       highlightthickness=0, bd=0).pack(fill="x", pady=1)
-        self.cases_reglages[cle] = var
-    # Le micro que le bouton Micro coupe (utile avec Voicemeeter : choisis celui que Discord utilise)
-    ligne_micro = tk.Frame(cadre, bg=CARTE)
-    ligne_micro.pack(fill="x", pady=(8, 2))
-    tk.Label(ligne_micro, text="Micro coupé par le bouton Micro :", bg=CARTE, fg=GRIS, font=("Segoe UI", 10)).pack(side="left")
-    self.choix_micro = ttk.Combobox(ligne_micro, state="readonly", width=44, values=["Micro par défaut de Windows"])
-    self.choix_micro.set(REGLAGES.get("micro_nom") or "Micro par défaut de Windows")
-    self.choix_micro.pack(side="left", padx=8)
-    self.texte(cadre, "Avec Voicemeeter, choisis le même micro que le « Périphérique d'entrée » de Discord.", 9, GRIS)
-
-    def remplir_micros(micros):
-        if not isinstance(micros, Exception) and micros:
-            self.choix_micro.config(values=["Micro par défaut de Windows"] + [nom for nom, _ in micros])
-    self.en_fond(lister_micros, remplir_micros)
-    self.bouton(cadre, "💾 Enregistrer", self.sauver_reglages, VERT)
-    self.info_reglages = self.texte(cadre, "", 10, VERT)
-
-
-def sauver_reglages(self):
-    nouveaux = {}
-    for cle, champ in self.champs_reglages.items():
-        valeur = champ.get().strip()
-        if cle == "apps_a_fermer":
-            nouveaux[cle] = [a.strip() for a in valeur.split(",") if a.strip()]
-        elif cle.startswith("dossier"):
-            nouveaux[cle] = valeur
-        else:
-            if not valeur.isdigit() or int(valeur) <= 0:
-                self.info_reglages.config(text=f"« {valeur} » n'est pas un nombre valide.", fg=ROUGE)
-                return
-            nouveaux[cle] = int(valeur)
-    for cle, var in self.cases_reglages.items():
-        nouveaux[cle] = var.get()
-    micro_choisi = self.choix_micro.get()
-    nouveaux["micro_nom"] = "" if micro_choisi.startswith("Micro par défaut") else micro_choisi
-    try:
-        if nouveaux["demarrage_windows"] != REGLAGES["demarrage_windows"] or nouveaux["demarrage_windows"]:
-            regler_demarrage(nouveaux["demarrage_windows"])
-    except OSError as e:
-        self.info_reglages.config(text=f"Démarrage Windows impossible à régler : {e}", fg=ROUGE)
-        return
-    if nouveaux["fermer_vers_icone"] and not REGLAGES["fermer_vers_icone"]:
-        self.creer_icone()
-    REGLAGES.update(nouveaux)
-    enregistrer_reglages()
-    # On met à jour ce qui est affiché dans les autres onglets
-    self.construire_zones()
-    self.info_dossier_rangeur.config(text=f"Dossier : {DOSSIER_A_RANGER}")
-    self.info_reglages.config(text="✅ Réglages enregistrés !", fg=VERT)
-
-
-BoiteAOutils.onglet_reglages = onglet_reglages
-BoiteAOutils.sauver_reglages = sauver_reglages
 
 
 # =============================================================
@@ -2681,262 +1319,6 @@ def generer_mdp(longueur=20):
             return mdp
 
 
-class Coffre:
-    """L'onglet coffre-fort. Il vit dans un cadre de la fenêtre principale."""
-
-    def __init__(self, cadre, racine):
-        self.cadre = cadre
-        self.racine = racine
-        self.mdp_maitre = None
-        self.entrees = []          # liste de dictionnaires {site, identifiant, mdp, note}
-        self.minuteur_verrou = None
-        self.minuteur_presse_papier = None
-        # Chaque clic ou touche remet à zéro le compte à rebours du verrouillage
-        racine.bind_all("<Any-KeyPress>", self.activite, add="+")
-        racine.bind_all("<Any-Button>", self.activite, add="+")
-        self.ecran_verrouille()
-
-    def vider(self):
-        for w in self.cadre.winfo_children():
-            w.destroy()
-
-    def bouton(self, parent, texte, action, couleur=ACCENT, cote="left"):
-        b = tk.Button(parent, text=texte, command=action, bg=couleur, fg=texte_sur(couleur),
-                      activebackground=couleur, activeforeground=texte_sur(couleur), relief="flat",
-                      font=("Segoe UI", 9, "bold"), padx=10, pady=5, cursor="hand2")
-        b.pack(side=cote, padx=3)
-        return b
-
-    def champ(self, parent, cache=False, largeur=28):
-        return tk.Entry(parent, show="•" if cache else "", bg=FOND, fg=TEXTE, insertbackground=TEXTE,
-                        relief="flat", font=("Segoe UI", 11), width=largeur)
-
-    # ---------- ÉCRAN VERROUILLÉ ----------
-
-    def ecran_verrouille(self):
-        self.vider()
-        self.mdp_maitre = None
-        self.entrees = []
-        premiere_fois = not FICHIER_COFFRE.exists()
-
-        boite = tk.Frame(self.cadre, bg=CARTE)
-        boite.place(relx=0.5, rely=0.45, anchor="center")
-        tk.Label(boite, text="🔐", bg=CARTE, fg=TEXTE, font=("Segoe UI", 30)).pack()
-        titre = "Crée ton mot de passe maître" if premiere_fois else "Coffre verrouillé"
-        tk.Label(boite, text=titre, bg=CARTE, fg=TEXTE, font=("Segoe UI", 13, "bold")).pack(pady=(0, 8))
-
-        self.champ_maitre = self.champ(boite, cache=True)
-        self.champ_maitre.pack(ipady=5, pady=3)
-        self.champ_maitre.bind("<Return>", lambda e: self.deverrouiller())
-        self.champ_confirm = None
-        if premiere_fois:
-            tk.Label(boite, text="Confirme-le :", bg=CARTE, fg=GRIS, font=("Segoe UI", 9)).pack()
-            self.champ_confirm = self.champ(boite, cache=True)
-            self.champ_confirm.pack(ipady=5, pady=3)
-            self.champ_confirm.bind("<Return>", lambda e: self.deverrouiller())
-            tk.Label(boite, text="⚠️ Si tu l'oublies, personne ne pourra ouvrir le coffre.\n"
-                                 "Choisis une phrase longue que tu retiens facilement.",
-                     bg=CARTE, fg=GRIS, font=("Segoe UI", 9)).pack(pady=4)
-
-        self.info_verrou = tk.Label(boite, text="", bg=CARTE, fg=ROUGE, font=("Segoe UI", 10))
-        self.info_verrou.pack(pady=3)
-        self.bouton(boite, "Créer le coffre" if premiere_fois else "Déverrouiller",
-                    self.deverrouiller, VERT, cote="top")
-
-    def deverrouiller(self):
-        if AESGCM is None and not charger_crypto():
-            if messagebox.askyesno("Coffre-fort", "Il manque la librairie « cryptography » pour chiffrer.\n\n"
-                                                  "L'installer maintenant ? (environ 30 secondes)"):
-                self.info_verrou.config(text="Installation...", fg=GRIS)
-                self.racine.update()
-                if installer_crypto() and charger_crypto():
-                    self.info_verrou.config(text="Installé ✅", fg=VERT)
-                else:
-                    self.info_verrou.config(text="Échec. Dans PowerShell : python -m pip install cryptography", fg=ROUGE)
-                    return
-            else:
-                return
-
-        mdp = self.champ_maitre.get()
-        if self.champ_confirm is not None:   # création du coffre
-            if len(mdp) < 10:
-                self.info_verrou.config(text="Au moins 10 caractères, s'il te plaît.", fg=ROUGE)
-                return
-            if mdp != self.champ_confirm.get():
-                self.info_verrou.config(text="Les deux mots de passe ne sont pas pareils.", fg=ROUGE)
-                return
-            sauvegarder_coffre([], mdp)
-            self.entrees = []
-        else:
-            self.info_verrou.config(text="Ouverture...", fg=GRIS)
-            self.racine.update()
-            try:
-                self.entrees = dechiffrer(FICHIER_COFFRE.read_bytes(), mdp)
-            except InvalidTag:
-                self.info_verrou.config(text="Mauvais mot de passe.", fg=ROUGE)
-                self.champ_maitre.delete(0, "end")
-                return
-            except Exception as e:
-                self.info_verrou.config(text=f"Coffre illisible : {e}", fg=ROUGE)
-                return
-        self.mdp_maitre = mdp
-        self.ecran_principal()
-        self.activite()
-
-    # ---------- VERROUILLAGE AUTO ----------
-
-    def activite(self, _evenement=None):
-        if self.mdp_maitre is None:
-            return
-        if self.minuteur_verrou:
-            self.racine.after_cancel(self.minuteur_verrou)
-        self.minuteur_verrou = self.racine.after(VERROU_MINUTES * 60 * 1000, self.verrouiller)
-
-    def verrouiller(self):
-        for w in self.racine.winfo_children():   # ferme une fenêtre d'édition restée ouverte
-            if isinstance(w, tk.Toplevel):
-                w.destroy()
-        self.ecran_verrouille()
-
-    # ---------- COFFRE OUVERT ----------
-
-    def ecran_principal(self):
-        self.vider()
-        haut = tk.Frame(self.cadre, bg=CARTE)
-        haut.pack(fill="x", pady=(0, 8))
-        tk.Label(haut, text="🔎", bg=CARTE, fg=GRIS).pack(side="left")
-        self.recherche = tk.StringVar()
-        self.recherche.trace_add("write", lambda *a: self.rafraichir())
-        tk.Entry(haut, textvariable=self.recherche, bg=FOND, fg=TEXTE, insertbackground=TEXTE,
-                 relief="flat", font=("Segoe UI", 10), width=22).pack(side="left", ipady=4, padx=6)
-        self.bouton(haut, "🔒 Verrouiller", self.verrouiller, ROUGE, cote="right")
-
-        self.liste = ttk.Treeview(self.cadre, columns=("site", "identifiant", "note"), show="headings", height=8)
-        for col, titre, larg in [("site", "Site / appli", 170), ("identifiant", "Identifiant", 190), ("note", "Note", 170)]:
-            self.liste.heading(col, text=titre)
-            self.liste.column(col, width=larg)
-        self.liste.pack(fill="both", expand=True)
-        self.liste.bind("<Double-1>", lambda e: self.copier("mdp"))
-
-        bas = tk.Frame(self.cadre, bg=CARTE)
-        bas.pack(fill="x", pady=(8, 0))
-        self.bouton(bas, "➕ Ajouter", lambda: self.fenetre_edition(None), VERT)
-        self.bouton(bas, "✏️ Modifier", self.modifier)
-        self.bouton(bas, "📋 Copier mdp", lambda: self.copier("mdp"))
-        self.bouton(bas, "👤 Copier identifiant", lambda: self.copier("identifiant"))
-        self.bouton(bas, "🗑", self.supprimer, ROUGE)
-        self.info = tk.Label(self.cadre, text="Astuce : double-clic sur une ligne = copier le mot de passe",
-                             bg=CARTE, fg=GRIS, font=("Segoe UI", 9), anchor="w")
-        self.info.pack(fill="x", pady=(6, 0))
-        self.rafraichir()
-
-    def rafraichir(self):
-        """Réaffiche la liste en tenant compte de la recherche."""
-        self.liste.delete(*self.liste.get_children())
-        filtre = self.recherche.get().lower()
-        for i, e in sorted(enumerate(self.entrees), key=lambda x: x[1]["site"].lower()):
-            if filtre in e["site"].lower() or filtre in e["identifiant"].lower():
-                self.liste.insert("", "end", iid=str(i), values=(e["site"], e["identifiant"], e.get("note", "")))
-
-    def selection(self):
-        choix = self.liste.selection()
-        if not choix:
-            self.info.config(text="Sélectionne d'abord une ligne 👆", fg=ROUGE)
-            return None
-        return int(choix[0])
-
-    def enregistrer(self):
-        sauvegarder_coffre(self.entrees, self.mdp_maitre)
-        self.rafraichir()
-
-    def copier(self, champ):
-        i = self.selection()
-        if i is None:
-            return
-        self.racine.clipboard_clear()
-        self.racine.clipboard_append(self.entrees[i][champ])
-        if champ == "mdp":
-            self.info.config(text=f"📋 Mot de passe copié ! Effacé du presse-papier dans {EFFACER_PRESSE_PAPIER} s.", fg=VERT)
-            if self.minuteur_presse_papier:
-                self.racine.after_cancel(self.minuteur_presse_papier)
-            self.minuteur_presse_papier = self.racine.after(EFFACER_PRESSE_PAPIER * 1000, self.effacer_presse_papier)
-        else:
-            self.info.config(text="👤 Identifiant copié !", fg=VERT)
-
-    def effacer_presse_papier(self):
-        self.minuteur_presse_papier = None
-        self.racine.clipboard_clear()
-        self.racine.clipboard_append("")
-        if self.mdp_maitre:
-            self.info.config(text="Presse-papier effacé 🧽", fg=GRIS)
-
-    def supprimer(self):
-        i = self.selection()
-        if i is None:
-            return
-        if messagebox.askyesno("Supprimer", f"Supprimer « {self.entrees[i]['site']} » du coffre ?"):
-            del self.entrees[i]
-            self.enregistrer()
-            self.info.config(text="Supprimé.", fg=GRIS)
-
-    def modifier(self):
-        i = self.selection()
-        if i is not None:
-            self.fenetre_edition(i)
-
-    def fenetre_edition(self, index):
-        """Petite fenêtre pour ajouter (index=None) ou modifier une entrée."""
-        e = self.entrees[index] if index is not None else {"site": "", "identifiant": "", "mdp": "", "note": ""}
-        f = tk.Toplevel(self.racine, bg=CARTE, padx=18, pady=14)
-        f.title("Modifier" if index is not None else "Ajouter")
-        f.transient(self.racine)
-        f.grab_set()   # on ne peut pas cliquer ailleurs tant qu'elle est ouverte
-
-        champs = {}
-        for ligne, (cle, titre) in enumerate([("site", "Site / appli"), ("identifiant", "Identifiant / e-mail"),
-                                              ("mdp", "Mot de passe"), ("note", "Note")]):
-            tk.Label(f, text=titre, bg=CARTE, fg=GRIS, font=("Segoe UI", 10)).grid(row=ligne, column=0, sticky="w", pady=4)
-            c = self.champ(f, cache=(cle == "mdp"))
-            c.insert(0, e.get(cle, ""))
-            c.grid(row=ligne, column=1, ipady=4, padx=8)
-            champs[cle] = c
-
-        def basculer_affichage():
-            champs["mdp"].config(show="" if champs["mdp"].cget("show") else "•")
-
-        def generer():
-            champs["mdp"].delete(0, "end")
-            champs["mdp"].insert(0, generer_mdp())
-            champs["mdp"].config(show="")
-
-        outils = tk.Frame(f, bg=CARTE)
-        outils.grid(row=2, column=2)
-        tk.Button(outils, text="👁", command=basculer_affichage, relief="flat", bg=FOND, fg=TEXTE).pack(side="left", padx=2)
-        tk.Button(outils, text="🎲", command=generer, relief="flat", bg=FOND, fg=TEXTE).pack(side="left", padx=2)
-
-        def valider():
-            nouveau = {cle: c.get().strip() for cle, c in champs.items()}
-            nouveau["mdp"] = champs["mdp"].get()   # on ne retire pas les espaces d'un mdp
-            if not nouveau["site"] or not nouveau["mdp"]:
-                messagebox.showwarning("Oups", "Il faut au moins un site et un mot de passe.", parent=f)
-                return
-            if index is None:
-                self.entrees.append(nouveau)
-            else:
-                self.entrees[index] = nouveau
-            self.enregistrer()
-            self.info.config(text=f"✅ « {nouveau['site']} » enregistré (chiffré).", fg=VERT)
-            f.destroy()
-
-        bas = tk.Frame(f, bg=CARTE)
-        bas.grid(row=5, column=0, columnspan=3, pady=(12, 0))
-        self.bouton(bas, "Enregistrer", valider, VERT)
-        self.bouton(bas, "Annuler", f.destroy, GRIS)
-        tk.Label(f, text="🎲 = générer un mot de passe solide   👁 = afficher / cacher",
-                 bg=CARTE, fg=GRIS, font=("Segoe UI", 9)).grid(row=6, column=0, columnspan=3, pady=(8, 0))
-        champs["site"].focus_set()
-
-
 # =============================================================
 #  📊 RAPPORT DE LA SEMAINE  -  statistiques au jour le jour
 # =============================================================
@@ -2984,109 +1366,6 @@ def bilan_semaine(stats, temps, decalage=0):
     }
 
 
-def noter(self, cle, valeur, mode="max"):
-    """Ajoute une statistique du jour (mode "max" = on garde la plus grande, "somme" = on additionne)."""
-    if valeur is None:
-        return
-    jour = self.stats.setdefault(time.strftime("%Y-%m-%d"), {})
-    jour[cle] = max(jour.get(cle, 0), valeur) if mode == "max" else jour.get(cle, 0) + valeur
-    self.stats_a_sauver = True
-
-
-def sauver_stats(self):
-    if self.stats_a_sauver:
-        ecrire_json(FICHIER_STATS, self.stats)
-        self.stats_a_sauver = False
-    try:   # garde-fou : si plantage.txt enfle (plus de 2 Mo), on arrête d'y écrire
-        if _FICHIER_PLANTAGE and (DOSSIER_APPLI / "plantage.txt").stat().st_size > 2_000_000:
-            import faulthandler
-            faulthandler.disable()
-    except OSError:
-        pass
-    self.racine.after(60 * 1000, self.sauver_stats)
-
-
-def onglet_rapport(self, cadre):
-    self.stats = charger_json(FICHIER_STATS, {})
-    self.stats_a_sauver = False
-    self.racine.after(60 * 1000, self.sauver_stats)
-    haut = tk.Frame(cadre, bg=CARTE)
-    haut.pack(fill="x")
-    self.texte(haut, "Rapport de la semaine", 13, gras=True).pack_configure(side="left")
-    self.choix_semaine = tk.IntVar(value=-1)
-    for valeur, nom in ((0, "Cette semaine"), (-1, "Semaine dernière")):
-        tk.Radiobutton(haut, text=nom, variable=self.choix_semaine, value=valeur, command=self.afficher_rapport,
-                       bg=CARTE, fg=TEXTE, selectcolor=FOND, activebackground=CARTE, activeforeground=TEXTE,
-                       font=("Segoe UI", 10), highlightthickness=0, bd=0).pack(side="right", padx=6)
-    self.cadre_rapport = tk.Frame(cadre, bg=CARTE)
-    self.cadre_rapport.pack(fill="both", expand=True, pady=(10, 0))
-    self.afficher_rapport()
-    # Le lundi (ou au 1er lancement de la semaine), on te le montre
-    semaine = time.strftime("%G-%V")
-    if REGLAGES.get("dernier_rapport") != semaine:
-        REGLAGES["dernier_rapport"] = semaine
-        enregistrer_reglages()
-        if any(bilan_semaine(self.stats, charger_temps(), -1).values()):
-            self.racine.after(2500, self.annoncer_rapport)
-
-
-def annoncer_rapport(self):
-    page = next((i for i, p in enumerate(self.navigation.pages) if p[1] == "Rapport"), None)
-    if page is not None:
-        self.choix_semaine.set(-1)
-        self.afficher_rapport()
-        self.navigation.select(page)
-    if self.icone:
-        try:
-            self.icone.notify("Ton rapport de la semaine est prêt 📊", "Boîte à outils")
-        except Exception:
-            pass
-
-
-def afficher_rapport(self):
-    for w in self.cadre_rapport.winfo_children():
-        w.destroy()
-    decalage = self.choix_semaine.get()
-    b = bilan_semaine(self.stats, charger_temps(), decalage)
-    avant = bilan_semaine(self.stats, charger_temps(), decalage - 1)
-    debut = time.strftime("%d/%m", time.strptime(b["jours"][0], "%Y-%m-%d"))
-    fin = time.strftime("%d/%m", time.strptime(b["jours"][-1], "%Y-%m-%d"))
-    tk.Label(self.cadre_rapport, text=f"Du {debut} au {fin}", bg=CARTE, fg=GRIS, font=("Segoe UI", 10),
-             anchor="w").pack(fill="x")
-
-    grille = tk.Frame(self.cadre_rapport, bg=CARTE)
-    grille.pack(fill="x", pady=8)
-    ecart = b["jeu_total"] - avant["jeu_total"]
-    tendance = (f"{'+' if ecart >= 0 else '−'}{duree_lisible(abs(ecart))} vs semaine d'avant"
-                if avant["jeu_total"] else "")
-    cases = [
-        ("Temps de jeu", duree_lisible(b["jeu_total"]), tendance, CYAN),
-        ("CPU le plus chaud", f"{b['cpu_max']:.0f}°" if b["cpu_max"] else "--",
-         "⚠️ a dépassé l'alerte" if b["cpu_max"] >= ALERTE_CPU else "RAS", ROUGE if b["cpu_max"] >= ALERTE_CPU else CYAN),
-        ("GPU le plus chaud", f"{b['gpu_max']:.0f}°" if b["gpu_max"] else "--",
-         "⚠️ a dépassé l'alerte" if b["gpu_max"] >= ALERTE_GPU else "RAS", ROUGE if b["gpu_max"] >= ALERTE_GPU else ROSE),
-        ("Place libérée", taille_lisible(b["nettoye"]), "avec le nettoyeur", VERT),
-        ("Mises à jour", str(int(b["maj"])), "applis mises à jour", VIOLET),
-    ]
-    for col, (titre, valeur, detail, couleur) in enumerate(cases):
-        grille.columnconfigure(col, weight=1, uniform="r")
-        c = Carte(grille, couleur=FOND, padx=12, pady=10)
-        c.grid(row=0, column=col, sticky="nsew", padx=4)
-        tk.Label(c, text=titre.upper(), bg=FOND, fg=GRIS, font=("Segoe UI", 8, "bold"), anchor="w").pack(fill="x")
-        tk.Label(c, text=valeur, bg=FOND, fg=couleur, font=("Segoe UI", 20, "bold"), anchor="w").pack(fill="x")
-        tk.Label(c, text=detail, bg=FOND, fg=GRIS, font=("Segoe UI", 9), anchor="w").pack(fill="x")
-
-    tk.Label(self.cadre_rapport, text="TES JEUX LES PLUS JOUÉS", bg=CARTE, fg=GRIS, font=("Segoe UI", 9, "bold"),
-             anchor="w").pack(fill="x", pady=(10, 4))
-    if not b["top"]:
-        tk.Label(self.cadre_rapport, text="Pas de partie cette semaine-là.", bg=CARTE, fg=GRIS,
-                 font=("Segoe UI", 10), anchor="w").pack(fill="x")
-    for rang, (jeu, sec) in enumerate(b["top"], start=1):
-        medaille = ["🥇", "🥈", "🥉"][rang - 1]
-        tk.Label(self.cadre_rapport, text=f"{medaille}  {jeu}  ·  {duree_lisible(sec)}", bg=CARTE, fg=TEXTE,
-                 font=("Segoe UI", 12), anchor="w").pack(fill="x", pady=1)
-
-
 # =============================================================
 #  🎛 PROFILS  -  Jeu / Travail / Silence en un clic
 # =============================================================
@@ -3116,8 +1395,9 @@ def regler_volume(pourcentage):
         appuyer(0xAF)   # volume +
 
 
-def appliquer_profil(nom):
-    """Fait tout le travail d'un profil. Renvoie un petit compte rendu."""
+def appliquer_profil(nom, ouvrir=True):
+    """Fait tout le travail d'un profil. Renvoie un petit compte rendu.
+    ouvrir=False : on n'ouvre aucune appli (utile quand le profil se met tout seul au lancement d'un jeu)."""
     p = REGLAGES["profils"][nom]
     fait = []
     if p.get("plan") and activer_plan(p["plan"]):
@@ -3127,7 +1407,7 @@ def appliquer_profil(nom):
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if res.returncode == 0:
             fait.append(f"{exe} fermé")
-    for appli in p.get("ouvrir", []):
+    for appli in (p.get("ouvrir", []) if ouvrir else []):
         try:
             if appli.lower() == "discord":
                 subprocess.Popen([str(Path(LOCALAPPDATA) / "Discord" / "Update.exe"), "--processStart", "Discord.exe"])
@@ -3136,99 +1416,9 @@ def appliquer_profil(nom):
             fait.append(f"{appli} ouvert")
         except OSError:
             pass
-    if p.get("volume") is not None:
-        try:
-            regler_volume(int(p["volume"]))
-            fait.append(f"volume {p['volume']} %")
-        except (AttributeError, OSError, ValueError):
-            pass
     REGLAGES["profil_actif"] = nom
     enregistrer_reglages()
     return fait
-
-
-def onglet_profils(self, cadre):
-    self.texte(cadre, "Profils", 13, gras=True)
-    self.texte(cadre, "Un clic change le plan d'alimentation, ferme ou ouvre des applis et règle le volume.", couleur=GRIS)
-    self.cadre_profils = tk.Frame(cadre, bg=CARTE)
-    self.cadre_profils.pack(fill="x", pady=8)
-    self.info_profil = self.texte(cadre, "", 10, VERT)
-    self.texte(cadre, "Modifier les profils", 11, gras=True).pack_configure(pady=(14, 2))
-    self.texte(cadre, "Applis séparées par des virgules. Pour ouvrir : un chemin, un lien (steam://...) ou « Discord ».",
-               9, GRIS)
-    edition = tk.Frame(cadre, bg=CARTE)
-    edition.pack(fill="x", pady=4)
-    self.champs_profils = {}
-    for col, titre in enumerate(["", "Plan d'alim", "Fermer", "Ouvrir", "Volume %"]):
-        tk.Label(edition, text=titre, bg=CARTE, fg=GRIS, font=("Segoe UI", 9, "bold")).grid(row=0, column=col, sticky="w", padx=4)
-    for ligne, (nom, p) in enumerate(REGLAGES["profils"].items(), start=1):
-        tk.Label(edition, text=f"{p.get('icone', '')} {nom}", bg=CARTE, fg=TEXTE, font=("Segoe UI", 10, "bold")).grid(
-            row=ligne, column=0, sticky="w", padx=4, pady=3)
-        plan = ttk.Combobox(edition, values=list(NOMS_PLANS.values()), state="readonly", width=18)
-        plan.set(NOMS_PLANS.get(p.get("plan"), "Utilisation normale"))
-        plan.grid(row=ligne, column=1, padx=4)
-        champs = {"plan": plan}
-        for col, cle, larg in ((2, "fermer", 18), (3, "ouvrir", 22), (4, "volume", 5)):
-            e = tk.Entry(edition, bg=FOND, fg=TEXTE, insertbackground=TEXTE, relief="flat", font=("Segoe UI", 10), width=larg)
-            v = p.get(cle) or ""
-            e.insert(0, ", ".join(v) if isinstance(v, list) else str(v))
-            e.grid(row=ligne, column=col, padx=4, ipady=3)
-            champs[cle] = e
-        self.champs_profils[nom] = champs
-    self.bouton(cadre, "💾 Enregistrer les profils", self.sauver_profils, VERT)
-    self.dessiner_profils()
-
-
-def dessiner_profils(self):
-    for w in self.cadre_profils.winfo_children():
-        w.destroy()
-    actif = REGLAGES.get("profil_actif")
-    for col, (nom, p) in enumerate(REGLAGES["profils"].items()):
-        self.cadre_profils.columnconfigure(col, weight=1, uniform="p")
-        couleur = [CYAN, VIOLET, ROSE][col % 3]
-        c = tk.Frame(self.cadre_profils, bg=FOND, padx=14, pady=12, highlightthickness=2 if nom == actif else 1,
-                     highlightbackground=couleur if nom == actif else BORD)
-        c.grid(row=0, column=col, sticky="nsew", padx=5)
-        tk.Label(c, text=f"{p.get('icone', '')} {nom}", bg=FOND, fg=couleur, font=("Segoe UI", 16, "bold"),
-                 anchor="w").pack(fill="x")
-        resume = [NOMS_PLANS.get(p.get("plan"), "")]
-        if p.get("fermer"):
-            resume.append("ferme " + ", ".join(p["fermer"]))
-        if p.get("ouvrir"):
-            resume.append("ouvre " + ", ".join(a.split("://")[0] if "://" in a else Path(a).stem for a in p["ouvrir"]))
-        if p.get("volume") is not None:
-            resume.append(f"volume {p['volume']} %")
-        tk.Label(c, text="\n".join(resume), bg=FOND, fg=GRIS, font=("Segoe UI", 9), anchor="w", justify="left",
-                 wraplength=220).pack(fill="x", pady=(4, 8))
-        tk.Button(c, text="✓ Actif" if nom == actif else "Activer", relief="flat", bg=couleur, fg=texte_sur(couleur),
-                  font=("Segoe UI", 10, "bold"), cursor="hand2", padx=12, pady=4,
-                  command=lambda n=nom: self.activer_profil(n)).pack(anchor="w")
-
-
-def activer_profil(self, nom):
-    self.info_profil.config(text=f"Profil {nom} en cours...", fg=GRIS)
-
-    def ensuite(fait):
-        if isinstance(fait, Exception):
-            self.info_profil.config(text=f"Erreur : {fait}", fg=ROUGE)
-            return
-        self.info_profil.config(text=f"✅ Profil {nom} : " + (", ".join(fait) or "rien à changer"), fg=VERT)
-        self.dessiner_profils()
-    self.en_fond(lambda: appliquer_profil(nom), ensuite)
-
-
-def sauver_profils(self):
-    plans = {v: k for k, v in NOMS_PLANS.items()}
-    for nom, champs in self.champs_profils.items():
-        p = REGLAGES["profils"][nom]
-        p["plan"] = plans.get(champs["plan"].get(), "SCHEME_BALANCED")
-        p["fermer"] = [a.strip() for a in champs["fermer"].get().split(",") if a.strip()]
-        p["ouvrir"] = [a.strip() for a in champs["ouvrir"].get().split(",") if a.strip()]
-        volume = champs["volume"].get().strip()
-        p["volume"] = max(0, min(100, int(volume))) if volume.isdigit() else None
-    enregistrer_reglages()
-    self.dessiner_profils()
-    self.info_profil.config(text="✅ Profils enregistrés", fg=VERT)
 
 
 # =============================================================
@@ -3330,140 +1520,6 @@ def stopper_sons():
             flux.abort()
         except Exception:
             pass
-
-
-def onglet_soundboard(self, cadre):
-    haut = tk.Frame(cadre, bg=CARTE)
-    haut.pack(fill="x")
-    self.texte(haut, "Soundboard", 13, gras=True).pack_configure(side="left")
-    tk.Button(haut, text="⏹ Stop", relief="flat", bg=ROUGE, fg="white", font=("Segoe UI", 10, "bold"),
-              cursor="hand2", padx=10, command=stopper_sons).pack(side="right")
-    tk.Button(haut, text="➕ Ajouter un son", relief="flat", bg=VERT, fg=FOND, font=("Segoe UI", 10, "bold"),
-              cursor="hand2", padx=10, command=self.ajouter_son).pack(side="right", padx=8)
-
-    sorties = tk.Frame(cadre, bg=CARTE)
-    sorties.pack(fill="x", pady=(8, 2))
-    tk.Label(sorties, text="Vers Discord (câble virtuel) :", bg=CARTE, fg=GRIS, font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w")
-    tk.Label(sorties, text="Dans ton casque :", bg=CARTE, fg=GRIS, font=("Segoe UI", 10)).grid(row=1, column=0, sticky="w")
-    self.choix_discord = ttk.Combobox(sorties, state="readonly", width=40)
-    self.choix_ecoute = ttk.Combobox(sorties, state="readonly", width=40)
-    self.choix_discord.grid(row=0, column=1, padx=8, pady=2, sticky="w")
-    self.choix_ecoute.grid(row=1, column=1, padx=8, pady=2, sticky="w")
-    for c in (self.choix_discord, self.choix_ecoute):
-        c.bind("<<ComboboxSelected>>", lambda e: self.sauver_sorties())
-    tk.Button(sorties, text="🔄", relief="flat", bg=FOND, fg=TEXTE, command=self.lister_sorties).grid(row=0, column=2)
-    self.aide_soundboard = tk.Label(cadre, text="", bg=CARTE, fg=GRIS, font=("Segoe UI", 9), anchor="w",
-                                    justify="left", wraplength=780)
-    self.aide_soundboard.pack(fill="x", pady=(2, 8))
-    self.grille_sons = tk.Frame(cadre, bg=CARTE)
-    self.grille_sons.pack(fill="both", expand=True)
-    self.texte(cadre, "Clic = jouer  ·  clic droit = renommer, volume, couleur, supprimer  ·  "
-                      "les mêmes sons sont dispo sur le Stream Deck et le téléphone", 9, GRIS)
-    self.lister_sorties()
-    self.dessiner_sons()
-
-
-def lister_sorties(self):
-    audio = charger_audio()
-    if not audio:
-        self.aide_soundboard.config(text="⚠️ Clique sur « Ajouter un son » : je te proposerai d'installer ce qu'il faut.")
-        return
-    noms = sorties_audio(audio[0])
-    self.choix_discord.config(values=["(aucune)"] + noms)
-    self.choix_ecoute.config(values=["(sortie par défaut)", "(aucune)"] + noms)
-    self.choix_discord.set(REGLAGES.get("sortie_discord") or "(aucune)")
-    self.choix_ecoute.set(REGLAGES.get("sortie_ecoute") or "(sortie par défaut)")
-    cable = [n for n in noms if "CABLE Input" in n or "VoiceMeeter Input" in n]
-    if cable and not REGLAGES.get("sortie_discord"):
-        self.choix_discord.set(cable[0])
-        self.sauver_sorties()
-    if not cable:
-        self.aide_soundboard.config(text="⚠️ Pour que Discord entende les sons, installe VB-CABLE (gratuit, vb-audio.com/Cable), "
-                                         "puis relance. Je t'expliquerai les 2 réglages Discord/Windows à faire.")
-    else:
-        self.aide_soundboard.config(text="✅ Câble virtuel trouvé. Dans Discord : Paramètres > Voix et vidéo > Périphérique d'entrée "
-                                         "= « CABLE Output ». Et pour ta voix : Windows > Son > ton micro > Propriétés > "
-                                         "Écouter > coche « Écouter ce périphérique » et choisis « CABLE Input ».")
-
-
-def sauver_sorties(self):
-    d, e = self.choix_discord.get(), self.choix_ecoute.get()
-    REGLAGES["sortie_discord"] = "" if d.startswith("(") else d
-    REGLAGES["sortie_ecoute"] = "" if e == "(sortie par défaut)" else (None if e == "(aucune)" else e)
-    enregistrer_reglages()
-
-
-def dessiner_sons(self):
-    for w in self.grille_sons.winfo_children():
-        w.destroy()
-    if not REGLAGES["sons"]:
-        tk.Label(self.grille_sons, text="Aucun son pour l'instant. Ajoute des .mp3, .wav ou .ogg !", bg=CARTE, fg=GRIS,
-                 font=("Segoe UI", 11)).pack(pady=30)
-        return
-    for i, son in enumerate(REGLAGES["sons"]):
-        self.grille_sons.columnconfigure(i % 4, weight=1, uniform="s")
-        couleur = son.get("couleur", CYAN)
-        pad = tk.Button(self.grille_sons, text=son["nom"], bg=FOND, fg=couleur, activebackground=couleur,
-                        activeforeground=FOND, relief="flat", font=("Segoe UI", 12, "bold"), wraplength=150,
-                        highlightthickness=2, highlightbackground=couleur, cursor="hand2", height=3,
-                        command=lambda s=son["id"]: threading.Thread(target=jouer_son, args=(s,), daemon=True).start())
-        pad.grid(row=i // 4, column=i % 4, sticky="nsew", padx=5, pady=5)
-        pad.bind("<Button-3>", lambda e, s=son: self.menu_son(e, s))
-
-
-def ajouter_son(self):
-    if not charger_audio(self.racine):
-        return
-    self.lister_sorties()
-    fichiers = filedialog.askopenfilenames(title="Choisis un ou plusieurs sons",
-                                           filetypes=[("Sons", "*.mp3 *.wav *.ogg *.flac"), ("Tous", "*.*")])
-    DOSSIER_SONS.mkdir(parents=True, exist_ok=True)
-    for f in fichiers:
-        source = Path(f)
-        copie = DOSSIER_SONS / source.name   # on garde une copie, même si tu supprimes l'original
-        if not copie.exists():
-            shutil.copy2(source, copie)
-        REGLAGES["sons"].append({"id": secrets.token_hex(4), "nom": source.stem[:24], "fichier": str(copie),
-                                 "volume": 80, "couleur": COULEURS_SONS[len(REGLAGES["sons"]) % len(COULEURS_SONS)]})
-    enregistrer_reglages()
-    self.dessiner_sons()
-
-
-def menu_son(self, evenement, son):
-    from tkinter import simpledialog
-    menu = tk.Menu(self.racine, tearoff=0, bg=CARTE, fg=TEXTE, activebackground=CYAN, activeforeground=FOND)
-
-    def renommer():
-        nom = simpledialog.askstring("Renommer", "Nouveau nom :", initialvalue=son["nom"], parent=self.racine)
-        if nom:
-            son["nom"] = nom[:24]
-            enregistrer_reglages()
-            self.dessiner_sons()
-
-    def volume():
-        v = simpledialog.askinteger("Volume", "Volume (0 à 150 %) :", initialvalue=son.get("volume", 80),
-                                    minvalue=0, maxvalue=150, parent=self.racine)
-        if v is not None:
-            son["volume"] = v
-            enregistrer_reglages()
-
-    def couleur():
-        son["couleur"] = COULEURS_SONS[(COULEURS_SONS.index(son.get("couleur", CYAN)) + 1) % len(COULEURS_SONS)] \
-            if son.get("couleur") in COULEURS_SONS else CYAN
-        enregistrer_reglages()
-        self.dessiner_sons()
-
-    def supprimer_son():
-        if messagebox.askyesno("Supprimer", f"Retirer « {son['nom']} » du soundboard ?"):
-            REGLAGES["sons"].remove(son)
-            enregistrer_reglages()
-            self.dessiner_sons()
-    menu.add_command(label="✏️ Renommer", command=renommer)
-    menu.add_command(label="🔉 Volume", command=volume)
-    menu.add_command(label="🎨 Changer la couleur", command=couleur)
-    menu.add_separator()
-    menu.add_command(label="🗑 Supprimer", command=supprimer_son)
-    menu.tk_popup(evenement.x_root, evenement.y_root)
 
 
 # =============================================================
@@ -3713,107 +1769,8 @@ def micro(action="etat"):
     return AUDIO.demander(_son_micro, action)
 
 
-def suivre_musique(self):
-    """Toutes les 3 s : titre en cours + état du micro."""
-    def ensuite(res):
-        if not isinstance(res, Exception):
-            self.titre_musique, self.micro_coupe = res
-            artiste, _, morceau = (self.titre_musique or "").partition(" - ")
-            self.dash_musique.config(text=(morceau or artiste or "Rien en lecture")[:34],
-                                     fg=TEXTE if self.titre_musique else GRIS)
-            self.dash_artiste.config(text=artiste if morceau else "")
-            self.afficher_micro()
-        self.racine.after(3000, self.suivre_musique)
-    self.en_fond(lambda: (musique_en_cours(), micro("etat")), ensuite)
-
-
-def afficher_micro(self):
-    if self.micro_coupe is None:
-        self.info_micro.config(text="?", fg=GRIS)
-    elif self.micro_coupe:
-        self.info_micro.config(text="COUPÉ · réactiver", fg=ROUGE)
-    else:
-        self.info_micro.config(text="actif · couper", fg=VERT)
-
-
-def basculer_micro(self):
-    import importlib.util
-    if importlib.util.find_spec("pycaw") is None:   # on regarde juste si la librairie est là, sans la charger ici
-        if not messagebox.askyesno("Micro", "Pour couper le micro, il faut la librairie pycaw.\n\nL'installer maintenant ?"):
-            return
-        if not installer_paquets("pycaw"):
-            messagebox.showerror("Oups", "Installation ratée. Dans PowerShell :\npython -m pip install pycaw")
-            return
-
-    def ensuite(coupe):
-        if not isinstance(coupe, Exception):
-            self.micro_coupe = coupe
-            self.afficher_micro()
-    self.en_fond(lambda: micro("basculer"), ensuite)
-
-
 JOURS = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
 MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
-
-
-def maj_horloge(self):
-    t = time.localtime()
-    self.horloge.config(text=f"{JOURS[t.tm_wday]} {t.tm_mday} {MOIS[t.tm_mon - 1]} · {t.tm_hour:02d}:{t.tm_min:02d}")
-    self.racine.after(5000, self.maj_horloge)
-
-
-def verifier_maj_appli(self, au_demarrage=False):
-    """Regarde s'il y a une nouvelle version (au démarrage puis toutes les 6 h)."""
-    def ensuite(infos):
-        if isinstance(infos, dict):
-            self.maj_dispo = infos
-            self.bouton_maj_appli.config(text=f"⬇  Mise à jour v{infos['version']}", state="normal")
-            self.bouton_maj_appli.pack(side="right", padx=(12, 0))
-            if au_demarrage and REGLAGES.get("maj_auto", True) and not self.session:
-                self.lancer_maj_appli(sans_question=True)
-        self.racine.after(6 * 3600 * 1000, self.verifier_maj_appli)
-    self.en_fond(chercher_maj, ensuite)
-
-
-def lancer_maj_appli(self, sans_question=False):
-    infos = self.maj_dispo
-    if not infos:
-        return
-    if not sans_question:
-        notes = infos.get("notes", "")
-        if not messagebox.askyesno("Mise à jour", f"Installer la version {infos['version']} ?\n\n{notes}\n\n"
-                                                  "La boîte à outils va redémarrer toute seule."):
-            return
-    self.bouton_maj_appli.config(text="⏳  Installation...", state="disabled")
-
-    def ensuite(erreur):
-        if isinstance(erreur, Exception):
-            erreur = str(erreur)
-        if erreur:
-            self.bouton_maj_appli.config(text=f"⬇  Mise à jour v{infos['version']}", state="normal")
-            messagebox.showerror("Mise à jour", f"Mise à jour impossible : {erreur}\nTa version actuelle continue de marcher.")
-            return
-        # On relance la nouvelle version, puis on ferme celle-ci
-        arguments = [sys.executable, str(Path(__file__).resolve()), "--apres-maj"]
-        if self.racine.state() == "withdrawn":
-            arguments.append("--cache")
-        journal(f"Mise à jour installée (v{infos['version']}), redémarrage : {arguments}")
-        drapeaux = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        try:   # « breakaway » : la nouvelle version survit même si l'ancienne était dans un groupe de processus
-            subprocess.Popen(arguments, creationflags=drapeaux | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0),
-                             close_fds=True)
-        except OSError:
-            subprocess.Popen(arguments, creationflags=drapeaux, close_fds=True)
-        self.quitter()
-    self.en_fond(lambda: installer_maj(infos), ensuite)
-
-
-for _nom in ("maj_horloge", "verifier_maj_appli", "lancer_maj_appli"):
-    setattr(BoiteAOutils, _nom, globals()[_nom])
-
-
-for _nom in ("suivre_musique", "afficher_micro", "basculer_micro"):
-    setattr(BoiteAOutils, _nom, globals()[_nom])
 
 
 # =============================================================
@@ -3990,6 +1947,3960 @@ PAGE_TELEPHONE = r'''<!doctype html>
 '''
 
 
+def action_pc(action):
+    import ctypes
+    if action == "verrouiller":
+        ctypes.windll.user32.LockWorkStation()
+    elif action == "veille":
+        # SetSuspendState(hibernation=False) = vraie mise en veille
+        ctypes.windll.powrprof.SetSuspendState(False, False, False)
+    elif action == "eteindre":
+        subprocess.run(["shutdown", "/s", "/t", "10"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    elif action == "redemarrer":
+        subprocess.run(["shutdown", "/r", "/t", "10"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+# =============================================================
+#  LES BRIQUES D'AFFICHAGE
+#  Des petits éléments réutilisés partout (boutons, onglets,
+#  interrupteurs...). Les écrire une seule fois ici garantit que
+#  toutes les pages se ressemblent.
+# =============================================================
+
+SURFACE = "#15152a"    # fond des boutons discrets et des lignes cliquables
+SURVOL = "#1d1d36"     # le même, quand la souris passe dessus
+CHAMP = "#0a0a12"      # fond des zones où on écrit
+ETEINT = "#55557a"     # texte désactivé
+COULEURS_ACCENT = {"Cyan": CYAN, "Rose": ROSE, "Violet": VIOLET, "Vert": VERT}
+COULEUR_NIVEAU = {"alerte": ROUGE, "attention": ORANGE, "info": CYAN, "ok": VERT, "inconnu": GRIS}
+
+
+def police(taille=10, gras=False):
+    return ("Segoe UI", taille, "bold" if gras else "normal")
+
+
+def pluriel(phrase, nombre):
+    """« 1 appli(s) » -> « 1 appli », « 3 appli(s) » -> « 3 applis »."""
+    return phrase.replace("(s)", "s" if nombre > 1 else "")
+
+
+def sans_accents(texte):
+    """« Réglages » -> « reglages » : pour que la recherche trouve même sans les accents."""
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", texte.lower()) if unicodedata.category(c) != "Mn")
+
+
+class Bouton(tk.Label):
+    """Un bouton plat. style = "principal" (couleur d'accent), "succes", "danger" ou "discret"."""
+
+    def __init__(self, parent, texte, commande=None, style="discret", petit=False):
+        self.commande, self.style, self.actif = commande, style, True
+        fond, encre = self.couleurs()
+        super().__init__(parent, text=texte, bg=fond, fg=encre, font=police(9 if petit else 10, True),
+                         padx=10 if petit else 14, pady=3 if petit else 6, cursor="hand2",
+                         highlightthickness=1, highlightbackground=BORD if style == "discret" else fond)
+        self.bind("<Button-1>", self.clic)
+        self.bind("<Enter>", lambda e: self.actif and self.config(bg=self.couleurs(survol=True)[0]))
+        self.bind("<Leave>", lambda e: self.actif and self.config(bg=self.couleurs()[0]))
+
+    def couleurs(self, survol=False):
+        base = {"principal": ACCENT, "succes": VERT, "danger": ROUGE}.get(self.style)
+        if base is None:
+            return (SURVOL if survol else SURFACE), TEXTE
+        return (melanger(base, "#ffffff", 0.25) if survol else base), texte_sur(base)
+
+    def clic(self, _evt=None):
+        if self.actif and self.commande:
+            self.commande()
+
+    def activer(self, oui=True):
+        """Bouton utilisable (True) ou grisé (False)."""
+        self.actif = bool(oui)
+        fond, encre = self.couleurs() if oui else ("#12121c", ETEINT)
+        self.config(bg=fond, fg=encre, cursor="hand2" if oui else "arrow",
+                    highlightbackground=BORD if self.style == "discret" or not oui else fond)
+
+    def changer(self, texte=None, style=None):
+        if style:
+            self.style = style
+        if texte is not None:
+            self.config(text=texte)
+        self.activer(self.actif)
+
+
+class Interrupteur(tk.Canvas):
+    """Un interrupteur oui / non (comme sur un téléphone)."""
+
+    def __init__(self, parent, valeur=False, commande=None, fond=CARTE):
+        super().__init__(parent, width=42, height=22, bg=fond, highlightthickness=0, cursor="hand2")
+        self.valeur, self.commande = bool(valeur), commande
+        self.bind("<Button-1>", self.basculer)
+        self.dessiner()
+
+    def dessiner(self):
+        self.delete("all")
+        self.create_line(11, 11, 31, 11, width=18, capstyle="round", fill=ACCENT if self.valeur else "#2a2a44")
+        x = 31 if self.valeur else 11
+        self.create_oval(x - 7, 4, x + 7, 18, fill="white" if self.valeur else "#9a9ab8", outline="")
+
+    def basculer(self, _evt=None):
+        self.valeur = not self.valeur
+        self.dessiner()
+        if self.commande:
+            self.commande(self.valeur)
+
+    def get(self):
+        return self.valeur
+
+    def set(self, valeur):
+        self.valeur = bool(valeur)
+        self.dessiner()
+
+
+class Jauge(tk.Canvas):
+    """Une barre de progression fine aux bouts arrondis."""
+
+    def __init__(self, parent, couleur=CYAN, fond=CARTE, epaisseur=7):
+        super().__init__(parent, height=epaisseur + 7, width=1, bg=fond, highlightthickness=0)
+        self.couleur, self.fond, self.epaisseur, self.fraction = couleur, fond, epaisseur, 0
+        self.bind("<Configure>", lambda e: self.regler(self.fraction, self.couleur))
+
+    def regler(self, fraction, couleur=None):
+        self.fraction, self.couleur = max(0, min(1, fraction or 0)), couleur or self.couleur
+        self.delete("all")
+        larg, milieu, e = max(self.winfo_width(), 40), (self.epaisseur + 7) // 2, self.epaisseur
+        self.create_line(e, milieu, larg - e, milieu, fill="#1c1c2c", width=e, capstyle="round")
+        if self.fraction > 0:
+            fin = e + (larg - 2 * e) * self.fraction
+            self.create_line(e, milieu, fin, milieu, fill=melanger(self.fond, self.couleur, 0.25), width=e + 6, capstyle="round")
+            self.create_line(e, milieu, fin, milieu, fill=self.couleur, width=e, capstyle="round")
+
+
+class Onglets(tk.Frame):
+    """Des onglets en haut d'une page. Chaque onglet a son propre cadre ; on ne montre que celui choisi."""
+
+    def __init__(self, parent, fond=FOND):
+        super().__init__(parent, bg=fond)
+        self.fond = fond
+        self.barre = tk.Frame(self, bg=fond)
+        self.barre.pack(fill="x")
+        self.zone = tk.Frame(self, bg=fond)
+        self.zone.pack(fill="both", expand=True, pady=(10, 0))
+        self.pages, self.actif, self.quand_change = {}, None, None
+
+    def ajouter(self, nom, carte=True):
+        """Crée l'onglet et renvoie le cadre à remplir."""
+        bouton = tk.Label(self.barre, text=nom, bg=self.fond, fg=GRIS, font=police(10, True), padx=14, pady=6, cursor="hand2")
+        bouton.pack(side="left", padx=(0, 6))
+        bouton.bind("<Button-1>", lambda e: self.choisir(nom))
+        bouton.bind("<Enter>", lambda e: nom != self.actif and bouton.config(fg=TEXTE))
+        bouton.bind("<Leave>", lambda e: nom != self.actif and bouton.config(fg=GRIS))
+        cadre = Carte(self.zone, padx=20, pady=16) if carte else tk.Frame(self.zone, bg=self.fond)
+        self.pages[nom] = (bouton, cadre)
+        if self.actif is None:
+            self.choisir(nom)
+        return cadre
+
+    def choisir(self, nom):
+        if nom not in self.pages:
+            return
+        self.actif = nom
+        for n, (bouton, cadre) in self.pages.items():
+            if n == nom:
+                bouton.config(bg=melanger(self.fond, ACCENT, 0.16), fg=ACCENT)
+                cadre.pack(fill="both", expand=True)
+            else:
+                bouton.config(bg=self.fond, fg=GRIS)
+                cadre.pack_forget()
+        if self.quand_change:
+            self.quand_change(nom)
+
+    def pastille(self, nom, texte):
+        """Ajoute un petit compteur à côté du nom de l'onglet (« Mises à jour  3 »)."""
+        if nom in self.pages:
+            self.pages[nom][0].config(text=f"{nom}   {texte}" if texte else nom)
+
+
+class Defilant(tk.Frame):
+    """Un cadre qu'on peut faire défiler à la molette quand le contenu est trop haut.
+    On met le contenu dans `.dedans`."""
+
+    def __init__(self, parent, fond=CARTE):
+        super().__init__(parent, bg=fond)
+        self.toile = tk.Canvas(self, bg=fond, highlightthickness=0, bd=0)
+        self.barre = ttk.Scrollbar(self, orient="vertical", command=self.toile.yview)
+        self.dedans = tk.Frame(self.toile, bg=fond)
+        self.fenetre = self.toile.create_window(0, 0, window=self.dedans, anchor="nw")
+        self.toile.configure(yscrollcommand=self.regler_barre)
+        self.toile.pack(side="left", fill="both", expand=True)
+        self.dedans.bind("<Configure>", lambda e: self.toile.configure(scrollregion=self.toile.bbox("all")))
+        self.toile.bind("<Configure>", lambda e: self.toile.itemconfigure(self.fenetre, width=e.width))
+        self.bind("<Enter>", lambda e: self.toile.bind_all("<MouseWheel>", self.molette))
+        self.bind("<Leave>", lambda e: self.toile.unbind_all("<MouseWheel>"))
+
+    def regler_barre(self, debut, fin):
+        self.barre.set(debut, fin)
+        if float(debut) <= 0 and float(fin) >= 1:   # tout tient à l'écran : pas besoin de barre
+            self.barre.pack_forget()
+        else:
+            self.barre.pack(side="right", fill="y")
+
+    def molette(self, evt):
+        if self.toile.yview() != (0.0, 1.0):
+            self.toile.yview_scroll(-1 if evt.delta > 0 else 1, "units")
+
+
+class Bulle:
+    """Une petite explication qui apparaît quand la souris reste sur un élément."""
+
+    def __init__(self, widget, texte):
+        self.widget, self.texte, self.fenetre, self.attente = widget, texte, None, None
+        widget.bind("<Enter>", self.prevoir, add="+")
+        widget.bind("<Leave>", self.cacher, add="+")
+        widget.bind("<Button-1>", self.cacher, add="+")
+
+    def prevoir(self, _evt=None):
+        self.attente = self.widget.after(500, self.montrer)
+
+    def montrer(self):
+        if self.fenetre or not self.texte:
+            return
+        self.fenetre = f = tk.Toplevel(self.widget)
+        f.overrideredirect(True)
+        f.attributes("-topmost", True)
+        tk.Label(f, text=self.texte, bg="#1a1a2e", fg=TEXTE, font=police(9), padx=8, pady=4, justify="left",
+                 wraplength=320, highlightthickness=1, highlightbackground=BORD).pack()
+        f.geometry(f"+{self.widget.winfo_rootx()}+{self.widget.winfo_rooty() + self.widget.winfo_height() + 6}")
+
+    def cacher(self, _evt=None):
+        if self.attente:
+            self.widget.after_cancel(self.attente)
+            self.attente = None
+        if self.fenetre:
+            self.fenetre.destroy()
+            self.fenetre = None
+
+
+def champ(parent, largeur=24, cache=False, valeur=""):
+    """Une zone où on écrit, au style de l'appli."""
+    c = tk.Entry(parent, show="•" if cache else "", bg=CHAMP, fg=TEXTE, insertbackground=TEXTE, relief="flat",
+                 font=police(10), width=largeur, highlightthickness=1, highlightbackground=BORD, highlightcolor=ACCENT)
+    if valeur != "":
+        c.insert(0, str(valeur))
+    return c
+
+
+def petit_titre(parent, texte, fond=CARTE, couleur=GRIS):
+    """PETIT TITRE GRIS en majuscules écartées, au-dessus d'un bloc."""
+    return tk.Label(parent, text=espacer(texte), bg=fond, fg=couleur, font=police(8), anchor="w")
+
+
+def libelle(parent, texte="", taille=10, couleur=TEXTE, gras=False, fond=CARTE, largeur=None, **options):
+    """Une ligne de texte. largeur = nombre de pixels avant de passer à la ligne."""
+    return tk.Label(parent, text=texte, bg=fond, fg=couleur, font=police(taille, gras), anchor="w", justify="left",
+                    wraplength=largeur or 0, **options)
+
+
+def vider(cadre):
+    for w in cadre.winfo_children():
+        w.destroy()
+
+
+def ligne_etat(parent, niveau, titre, detail="", bouton=None, action=None, fond=CARTE):
+    """Une ligne « point de couleur + titre + explication (+ bouton) ». Sert aux bilans et aux listes À faire."""
+    ligne = tk.Frame(parent, bg=fond)
+    ligne.pack(fill="x", pady=5)
+    tk.Label(ligne, text="●", bg=fond, fg=COULEUR_NIVEAU.get(niveau, GRIS), font=police(13)).pack(side="left", anchor="n", padx=(0, 10))
+    if bouton and action:
+        Bouton(ligne, bouton, action, petit=True).pack(side="right", anchor="n", padx=(10, 0))
+    textes = tk.Frame(ligne, bg=fond)
+    textes.pack(side="left", fill="x", expand=True)
+    libelle(textes, titre, 10, TEXTE, True, fond).pack(fill="x")
+    if detail:
+        d = libelle(textes, detail, 9, GRIS, fond=fond)
+        d.pack(fill="x")
+        d.bind("<Configure>", lambda e: d.config(wraplength=max(120, e.width - 4)))
+    return ligne
+
+
+class Navigation:
+    """Le menu à gauche. Chaque page est un cadre ; on n'affiche que celle qui est choisie."""
+
+    def __init__(self, menu, zone, titre, sous_titre):
+        self.menu, self.zone, self.titre, self.sous_titre = menu, zone, titre, sous_titre
+        self.pages = []        # liste de (cadre, nom, ligne, barre, label)
+        self.aides = {}        # nom de la page -> phrase d'explication affichée sous le titre
+        self.compteurs = {}    # nom -> petit compteur à droite dans le menu
+        self.actuelle, self.quand_change = None, None
+
+    def groupe(self, titre):
+        tk.Label(self.menu, text=espacer(titre), bg=MENU, fg=ETEINT, font=police(7, True), anchor="w").pack(
+            fill="x", padx=22, pady=(12, 2))
+
+    def add(self, cadre, icone, nom, aide, en_bas=False):
+        ligne = tk.Frame(self.menu, bg=MENU, cursor="hand2")
+        ligne.pack(fill="x", side="bottom" if en_bas else "top")
+        barre = tk.Frame(ligne, bg=MENU, width=3)
+        barre.pack(side="left", fill="y")
+        tk.Label(ligne, text=icone, bg=MENU, fg=GRIS, font=police(10), width=3).pack(side="left", padx=(8, 0))
+        lbl = tk.Label(ligne, text=nom, bg=MENU, fg=GRIS, font=police(10), anchor="w", pady=6)
+        lbl.pack(side="left", fill="x", expand=True)
+        compteur = tk.Label(ligne, text="", bg=MENU, fg=FOND, font=police(8, True))
+        index = len(self.pages)
+        for w in (ligne, lbl) + tuple(ligne.winfo_children()):
+            w.bind("<Button-1>", lambda e, i=index: self.select(i))
+        self.pages.append((cadre, nom, ligne, barre, lbl))
+        self.aides[nom] = aide
+        self.compteurs[nom] = compteur
+
+    def compter(self, nom, nombre, couleur=ORANGE):
+        """Affiche (ou retire) un compteur à côté d'une page du menu."""
+        c = self.compteurs.get(nom)
+        if c is None:
+            return
+        if nombre:
+            c.config(text=f" {nombre} ", bg=couleur)
+            c.pack(side="right", padx=10)
+        else:
+            c.pack_forget()
+
+    def select(self, index):
+        for i, (cadre, nom, ligne, barre, lbl) in enumerate(self.pages):
+            actif = i == index
+            fond = melanger(MENU, ACCENT, 0.10) if actif else MENU
+            for w in ligne.winfo_children():
+                if w is not barre and w is not self.compteurs[nom]:
+                    w.config(bg=fond, fg="white" if actif else GRIS)
+            ligne.config(bg=fond)
+            barre.config(bg=ACCENT if actif else MENU)
+            if actif:
+                cadre.pack(fill="both", expand=True)
+                self.titre.config(text=nom)
+                self.sous_titre.config(text=self.aides.get(nom, ""))
+                self.actuelle = nom
+            else:
+                cadre.pack_forget()
+        if self.quand_change:
+            self.quand_change(self.actuelle)
+
+
+# =============================================================
+#  LA FENÊTRE
+#  Une "classe" regroupe des données et des fonctions qui vont
+#  ensemble. Ici : tout ce qui concerne notre fenêtre.
+#  Ce chapitre pose le décor (menu, en-tête, notifications, recherche,
+#  mini-fenêtre). Les pages sont dans les chapitres suivants.
+# =============================================================
+
+NOUVEAUTES = [
+    ("3.0.0", "La grande refonte", [
+        "Fini les fermetures toutes seules : la lecture du micro a été réécrite",
+        "Accueil : une liste « À faire » te dit quoi regarder, avec un bouton pour y aller",
+        "Graphique des températures sur 10 minutes, 1 heure ou 24 heures",
+        "Santé du PC : un bilan en un coup d'œil, puis Refroidissement, Disques, Mises à jour, Diagnostic",
+        "Nouveau : suivi des ventilateurs et de la pompe (avec alerte si l'un d'eux s'arrête)",
+        "Nouveau : résumé de chaque partie (durée, températures max) dans Jeux > Sessions",
+        "Nouveau : le profil Jeu peut se mettre tout seul quand un jeu démarre",
+        "Nouveau : notifications Windows (surchauffe, disque plein, fin de partie)",
+        "Nouveau : mini-fenêtre toujours visible avec les températures",
+        "Nouveau : recherche rapide avec Ctrl+K (pages, profils, sons, actions)",
+        "Nouveau : page Diagnostic pour voir si tout est bien branché (capteurs, micro, Stream Deck)",
+        "Menu rangé par thème, et chaque page a une phrase d'explication sous son titre",
+    ]),
+]
+
+FICHIER_HISTORIQUE = DOSSIER_APPLI / "historique.json"
+FICHIER_SESSIONS = DOSSIER_APPLI / "sessions.json"
+PERIODES = {"10 min": (600, 2), "1 h": (3600, 12), "24 h": (86400, 288)}   # nom -> (durée, secondes par point)
+ORDRE_NIVEAUX = {"alerte": 0, "attention": 1, "info": 2}
+
+
+class BoiteAOutils:
+
+    def __init__(self, racine, cache=False):
+        self.racine = racine
+        self.icone = None                 # l'icône près de l'horloge
+        self.file_icone = queue.Queue()   # messages venant des autres « fils » (icône, téléphone, Stream Deck)
+        self.session = None               # infos de la session gaming en cours
+        self.taches = {}                  # la liste « À faire » : clé -> {niveau, texte, detail, bouton, action}
+        self.notifs = deque(maxlen=40)    # les dernières notifications
+        self.non_lues = 0
+        self.dernieres_alertes = {}       # pour ne pas répéter la même notification toutes les 2 secondes
+        self.flottants = []               # panneaux posés par-dessus la page (recherche, notifications)
+        self.sous_pages = {}              # nom de page -> ses onglets
+        self.mini = None
+        self.maj_dispo = None
+        self.cache_au_depart = cache
+        racine.title("Boîte à outils de Crz")
+        if (DOSSIER_APPLI / "icone.ico").exists():   # logo de l'appli (fenêtre + barre des tâches)
+            try:
+                racine.iconbitmap(default=str(DOSSIER_APPLI / "icone.ico"))
+            except tk.TclError:
+                pass
+        racine.geometry("1180x760")
+        racine.minsize(1080, 700)
+        racine.configure(bg=FOND)
+        self.style()
+
+        # ----- Menu à gauche -----
+        menu = tk.Frame(racine, bg=MENU, width=214)
+        menu.pack(side="left", fill="y")
+        menu.pack_propagate(False)   # garde la largeur fixe
+        logo = tk.Canvas(menu, bg=MENU, height=70, highlightthickness=0)
+        logo.pack(fill="x", padx=(18, 0), pady=(16, 0))
+        gros = police(19, True)
+        logo.create_text(2, 4, text="⚡", fill=CYAN, anchor="nw", font=gros)
+        logo.create_text(34, 4, text="CRZ", fill=CYAN, anchor="nw", font=gros)
+        x, mesure, mot = 2, tk.font.Font(font=gros), "TOOLBOX"
+        for i, lettre in enumerate(mot):   # chaque lettre un peu plus violette : effet dégradé
+            logo.create_text(x, 38, text=lettre, fill=melanger(CYAN, VIOLET, i / (len(mot) - 1)), anchor="nw", font=gros)
+            x += mesure.measure(lettre) + 1
+        tk.Frame(racine, bg=BORD, width=1).pack(side="left", fill="y")   # trait de séparation
+
+        # ----- Zone principale : en-tête + page -----
+        principale = tk.Frame(racine, bg=FOND, padx=24, pady=16)
+        principale.pack(side="left", fill="both", expand=True)
+        self.principale = principale
+        entete = tk.Frame(principale, bg=FOND)
+        entete.pack(fill="x", pady=(0, 12))
+        haut = tk.Frame(entete, bg=FOND)   # 1re ligne : le titre à gauche, les boutons à droite
+        haut.pack(fill="x")
+        droite = tk.Frame(haut, bg=FOND)
+        droite.pack(side="right", pady=(4, 0))
+        titre = tk.Label(haut, text="", bg=FOND, fg=TEXTE, font=police(20, True), anchor="w")
+        titre.pack(side="left", fill="x", expand=True)
+        sous_titre = tk.Label(entete, text="", bg=FOND, fg=GRIS, font=police(10), anchor="w")   # 2e ligne : l'explication
+        sous_titre.pack(fill="x")
+        self.horloge = tk.Label(droite, text="", bg=FOND, fg=GRIS, font=police(10))
+        self.horloge.pack(side="right", padx=(12, 0))
+        self.pastille = tk.Label(droite, text="…", bg=FOND, fg=GRIS, font=police(10, True), padx=12, pady=4, cursor="hand2")
+        self.pastille.pack(side="right", padx=(8, 0))
+        self.pastille.bind("<Button-1>", lambda e: self.aller_a("Santé du PC", "Bilan"))
+        Bulle(self.pastille, "L'état général de ton PC. Clique pour voir le bilan complet.")
+        self.cloche = tk.Label(droite, text="🔔", bg=SURFACE, fg=GRIS, font=police(10, True), padx=10, pady=4, cursor="hand2")
+        self.cloche.pack(side="right", padx=(8, 0))
+        self.cloche.bind("<Button-1>", lambda e: self.basculer_notifs())
+        Bulle(self.cloche, "Les dernières notifications")
+        recherche = tk.Label(droite, text="🔎  Rechercher   Ctrl+K", bg=SURFACE, fg=GRIS, font=police(9), padx=12, pady=5, cursor="hand2")
+        recherche.pack(side="right", padx=(8, 0))
+        recherche.bind("<Button-1>", lambda e: self.basculer_palette())
+        self.bouton_maj_appli = Bouton(droite, "", self.lancer_maj_appli, "principal", petit=True)
+        self.maj_horloge()
+        zone = tk.Frame(principale, bg=FOND)
+        zone.pack(fill="both", expand=True)
+        self.message_toast = tk.Label(racine, text="", bg=SURVOL, fg=TEXTE, font=police(10, True), padx=16, pady=8)
+
+        # ----- Les pages -----
+        nav = self.navigation = Navigation(menu, zone, titre, sous_titre)
+        self.demarrer_serveur()   # pour le téléphone et le Stream Deck
+        self.preparer_stats()     # les statistiques servent à plusieurs pages
+
+        def page(icone, nom, aide, constructeur, carte=True, en_bas=False):
+            cadre = Carte(zone, padx=20, pady=16) if carte else tk.Frame(zone, bg=FOND)
+            nav.add(cadre, icone, nom, aide, en_bas)
+            constructeur(cadre)
+
+        page("⚙", "Réglages", "Tout se règle ici, sans toucher au code.", self.page_reglages, carte=False, en_bas=True)
+        nav.groupe("Surveiller")
+        page("◉", "Accueil", "Ton PC en un coup d'œil, et ce qu'il y a à faire.", self.page_accueil, carte=False)
+        page("🩺", "Santé du PC", "Températures, ventilateurs, disques et mises à jour.", self.page_sante, carte=False)
+        page("📊", "Rapport", "Le résumé de ta semaine : temps de jeu, températures, ménage.", self.page_rapport)
+        nav.groupe("Jouer")
+        page("🎮", "Jeux", "Lance une partie et retrouve ton temps de jeu.", self.page_jeux, carte=False)
+        page("🎛", "Profils", "Un clic pour passer le PC en mode Jeu, Travail ou Silence.", self.page_profils, carte=False)
+        page("🔊", "Soundboard", "Des sons à envoyer dans Discord, comme si c'était ton micro.", self.page_soundboard)
+        nav.groupe("Entretenir")
+        page("🧹", "Entretien", "Faire de la place, ranger tes fichiers, voir ce qui se lance au démarrage.", self.page_entretien, carte=False)
+        nav.groupe("Outils")
+        self.coffre = None
+        page("🔐", "Coffre-fort", "Tes mots de passe, chiffrés. Toi seul peux les ouvrir.", self.page_coffre)
+        page("🔔", "Alerte prix", "Colle le lien d'un produit : je te préviens quand le prix baisse.", self.page_prix)
+        page("📱", "Téléphone", "Pilote ton PC depuis ton téléphone ou ton Stream Deck.", self.page_telephone, carte=False)
+        tk.Label(menu, text=f"v{VERSION}", bg=MENU, fg="#44445e", font=police(8)).pack(side="bottom", pady=(0, 6), before=nav.pages[0][2])
+        nav.quand_change = self.page_changee
+        self.aller_a("Accueil")
+
+        # ----- Clavier, fermeture, démarrage -----
+        racine.bind_all("<Control-k>", lambda e: self.basculer_palette())
+        racine.bind_all("<Control-K>", lambda e: self.basculer_palette())
+        racine.bind_all("<Escape>", lambda e: self.fermer_flottants(), add="+")
+        racine.bind_all("<Button-1>", self.clic_ailleurs, add="+")
+        racine.protocol("WM_DELETE_WINDOW", self.fermer)   # clic sur la croix
+        racine.protocol("WM_SAVE_YOURSELF", self.arret_windows)   # Windows s'éteint ou ferme la session
+        self.lire_file_icone()
+        self.racine.after(8000, lambda: self.verifier_maj_appli(au_demarrage=True))
+        self.racine.after(1500, lambda: self.creer_icone(demander=False))   # l'icône sert aussi aux notifications
+        self.racine.after(20000, self.verifier_stabilite)
+        if REGLAGES.get("mini_fenetre"):
+            self.racine.after(1200, self.ouvrir_mini)
+        if cache:   # lancé au démarrage de Windows : direct près de l'horloge
+            if self.creer_icone(demander=False):
+                racine.withdraw()
+            else:
+                racine.iconify()
+        self.racine.after(1800, self.annoncer_nouveautes)
+
+    # ---------- petits outils ----------
+
+    def style(self):
+        s = ttk.Style()
+        s.theme_use("clam")
+        s.configure("Treeview", background=CHAMP, fieldbackground=CHAMP, foreground=TEXTE, rowheight=28,
+                    font=police(10), borderwidth=0, relief="flat")
+        s.configure("Treeview.Heading", background=SURFACE, foreground=GRIS, font=police(9, True), relief="flat", borderwidth=0)
+        s.map("Treeview", background=[("selected", melanger(CHAMP, ACCENT, 0.30))], foreground=[("selected", "white")])
+        s.map("Treeview.Heading", background=[("active", SURVOL)])
+        s.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])   # sans le cadre clair autour
+        s.configure("TCombobox", fieldbackground=CHAMP, background=SURFACE, foreground=TEXTE, arrowcolor=ACCENT,
+                    bordercolor=BORD, lightcolor=BORD, darkcolor=BORD, padding=4)
+        s.map("TCombobox", fieldbackground=[("readonly", CHAMP)], foreground=[("readonly", TEXTE)],
+              selectbackground=[("readonly", CHAMP)], selectforeground=[("readonly", TEXTE)])
+        s.configure("Vertical.TScrollbar", background=BORD, troughcolor=CARTE, bordercolor=CARTE, arrowcolor=GRIS,
+                    lightcolor=BORD, darkcolor=BORD, relief="flat")
+        s.map("Vertical.TScrollbar", background=[("active", ETEINT)])
+        for cle, valeur in (("background", CARTE), ("foreground", TEXTE), ("selectBackground", ACCENT), ("selectForeground", FOND)):
+            self.racine.option_add(f"*TCombobox*Listbox.{cle}", valeur)
+
+    def en_fond(self, travail, ensuite):
+        """Lance `travail` en arrière-plan (la fenêtre ne gèle pas),
+        puis appelle `ensuite(resultat)` quand c'est fini."""
+        boite = {}
+
+        def executer():
+            try:
+                boite["res"] = travail()
+            except Exception as e:
+                boite["res"] = e
+        fil = threading.Thread(target=executer, daemon=True)
+        fil.start()
+
+        def verifier():
+            if fil.is_alive():
+                self.racine.after(100, verifier)   # on revérifie dans 100 ms
+            else:
+                ensuite(boite.get("res"))
+        verifier()
+
+    def aller_a(self, nom, onglet=None):
+        """Ouvre une page du menu par son nom (et, si on veut, un de ses onglets)."""
+        noms = [p[1] for p in self.navigation.pages]
+        if nom in noms:
+            self.navigation.select(noms.index(nom))
+            if onglet and nom in self.sous_pages:
+                self.sous_pages[nom].choisir(onglet)
+        self.fermer_flottants()
+
+    def page_changee(self, nom):
+        self.fermer_flottants()
+
+    def toast(self, texte, niveau="ok"):
+        """Un petit message qui apparaît en bas de la fenêtre et s'efface tout seul."""
+        couleur = COULEUR_NIVEAU.get(niveau, VERT)
+        self.message_toast.config(text=texte, fg=couleur, bg=melanger(CARTE, couleur, 0.14),
+                                  highlightthickness=1, highlightbackground=melanger(CARTE, couleur, 0.5))
+        self.message_toast.place(relx=0.5, rely=1.0, y=-22, anchor="s")
+        self.message_toast.lift()
+        if getattr(self, "fin_toast", None):
+            self.racine.after_cancel(self.fin_toast)
+        self.fin_toast = self.racine.after(3500, self.message_toast.place_forget)
+
+    def maj_horloge(self):
+        t = time.localtime()
+        self.horloge.config(text=f"{JOURS[t.tm_wday]} {t.tm_mday} {MOIS[t.tm_mon - 1]} · {t.tm_hour:02d}:{t.tm_min:02d}")
+        self.racine.after(5000, self.maj_horloge)
+
+    def ouvrir_dossier_appli(self):
+        try:
+            os.startfile(DOSSIER_APPLI)
+        except (AttributeError, OSError):
+            self.toast(f"Dossier : {DOSSIER_APPLI}", "info")
+
+    # ---------- la liste « À faire » ----------
+    #  N'importe quelle page peut signaler un point à regarder avec self.tache(...),
+    #  et le retirer avec self.tache_finie(...). L'accueil, le bilan et la pastille
+    #  en haut se mettent à jour tout seuls.
+
+    def tache(self, cle, niveau, texte, detail="", bouton="Voir", action=None, prevenir=True):
+        nouvelle = cle not in self.taches or self.taches[cle]["niveau"] != niveau
+        self.taches[cle] = {"niveau": niveau, "texte": texte, "detail": detail, "bouton": bouton, "action": action}
+        if nouvelle:
+            if prevenir and niveau in ("alerte", "attention"):
+                self.notifier(texte, detail, niveau, action, cle=cle)
+            self.afficher_taches()
+        return nouvelle
+
+    def tache_finie(self, cle):
+        if self.taches.pop(cle, None) is not None:
+            self.afficher_taches()
+
+    def taches_triees(self):
+        return sorted(self.taches.values(), key=lambda t: ORDRE_NIVEAUX.get(t["niveau"], 9))
+
+    def afficher_taches(self):
+        taches = self.taches_triees()
+        importantes = [t for t in taches if t["niveau"] in ("alerte", "attention")]
+        if not importantes:
+            texte, couleur = "✓  Tout va bien", VERT
+        else:
+            couleur = ROUGE if importantes[0]["niveau"] == "alerte" else ORANGE
+            texte = "⚠  " + importantes[0]["texte"] + (f"  (+{len(importantes) - 1})" if len(importantes) > 1 else "")
+        self.pastille.config(text=texte[:46], fg=couleur, bg=melanger(FOND, couleur, 0.12))
+        # Le même nombre partout : menu, carte « À faire » de l'accueil et bilan
+        self.navigation.compter("Santé du PC", len(taches), couleur if importantes else CYAN)
+        for redessiner in ("dessiner_a_faire", "dessiner_bilan"):
+            if hasattr(self, "cadre_" + redessiner.split("_", 1)[1]):
+                getattr(self, redessiner)()
+
+    # ---------- notifications ----------
+
+    def notifier(self, titre, texte="", niveau="info", action=None, cle=None, silence=1800):
+        """Ajoute une notification (cloche en haut) et prévient avec une bulle Windows si la fenêtre n'est pas devant."""
+        cle = cle or titre
+        if time.time() - self.dernieres_alertes.get(cle, 0) < silence:
+            return
+        self.dernieres_alertes[cle] = time.time()
+        self.notifs.appendleft({"heure": time.strftime("%H:%M"), "titre": titre, "texte": texte, "niveau": niveau, "action": action})
+        self.non_lues += 1
+        self.dessiner_cloche()
+        try:
+            devant = self.racine.state() == "normal" and self.racine.focus_displayof() is not None
+        except tk.TclError:
+            devant = False
+        if devant:
+            self.toast(titre, niveau if niveau != "info" else "info")
+        elif REGLAGES.get("notifications", True) and self.icone:
+            try:
+                self.icone.notify(texte or titre, titre if texte else "Boîte à outils")
+            except Exception:
+                pass
+
+    def dessiner_cloche(self):
+        if self.non_lues:
+            self.cloche.config(text=f"🔔 {self.non_lues}", fg=FOND, bg=ORANGE)
+        else:
+            self.cloche.config(text="🔔", fg=GRIS, bg=SURFACE)
+
+    def basculer_notifs(self):
+        if any(nom == "notifs" for nom, _ in self.flottants):
+            self.fermer_flottants()
+            return
+        self.fermer_flottants()
+        panneau = tk.Frame(self.racine, bg=CARTE, highlightthickness=1, highlightbackground=BORD, padx=14, pady=12)
+        panneau.place(relx=1.0, x=-24, y=62, anchor="ne", width=390)
+        panneau.lift()
+        self.flottants.append(("notifs", panneau))
+        tete = tk.Frame(panneau, bg=CARTE)
+        tete.pack(fill="x", pady=(0, 6))
+        petit_titre(tete, "Notifications").pack(side="left")
+        if self.notifs:
+            vider_tout = tk.Label(tete, text="Tout effacer", bg=CARTE, fg=ACCENT, font=police(9), cursor="hand2")
+            vider_tout.pack(side="right")
+            vider_tout.bind("<Button-1>", lambda e: (self.notifs.clear(), self.fermer_flottants()))
+        if not self.notifs:
+            libelle(panneau, "Rien pour l'instant. Les alertes (surchauffe, disque plein, fin de partie...) arriveront ici.",
+                    9, GRIS, largeur=350).pack(fill="x", pady=8)
+        for n in list(self.notifs)[:7]:
+            ligne = tk.Frame(panneau, bg=CARTE, cursor="hand2" if n["action"] else "arrow")
+            ligne.pack(fill="x", pady=4)
+            tk.Label(ligne, text="●", bg=CARTE, fg=COULEUR_NIVEAU.get(n["niveau"], CYAN), font=police(10)).pack(side="left", anchor="n", padx=(0, 8))
+            tk.Label(ligne, text=n["heure"], bg=CARTE, fg=ETEINT, font=police(8)).pack(side="right", anchor="n")
+            textes = tk.Frame(ligne, bg=CARTE)
+            textes.pack(side="left", fill="x", expand=True)
+            libelle(textes, n["titre"], 10, TEXTE, True, largeur=280).pack(fill="x")
+            if n["texte"]:
+                libelle(textes, n["texte"], 9, GRIS, largeur=280).pack(fill="x")
+            if n["action"]:
+                for w in [ligne, textes] + textes.winfo_children():
+                    w.bind("<Button-1>", lambda e, a=n["action"]: (self.fermer_flottants(), a()))
+        self.non_lues = 0
+        self.dessiner_cloche()
+
+    # ---------- recherche rapide (Ctrl+K) ----------
+
+    def commandes(self):
+        """Tout ce qu'on peut lancer depuis la recherche : [(texte affiché, fonction), ...]."""
+        liste = []
+        for _, nom, *_ in self.navigation.pages[1:] + self.navigation.pages[:1]:   # dans l'ordre du menu
+            liste.append((f"Ouvrir : {nom}", lambda n=nom: self.aller_a(n)))
+            for onglet in getattr(self.sous_pages.get(nom), "pages", {}):
+                liste.append((f"Ouvrir : {nom} › {onglet}", lambda n=nom, o=onglet: self.aller_a(n, o)))
+        liste += [
+            ("Action : couper ou réactiver le micro", self.basculer_micro),
+            ("Action : mode jeu (profil Jeu)", self.mode_jeu),
+            ("Action : montrer ou cacher la mini-fenêtre", self.basculer_mini),
+            ("Action : vérifier les mises à jour (pilotes et applis)", lambda: (self.aller_a("Santé du PC", "Mises à jour"), self.verifier_maj(), self.verifier_pilotes())),
+            ("Action : analyser ce qui peut être nettoyé", lambda: (self.aller_a("Entretien", "Nettoyer"), self.analyser())),
+            ("Action : chercher une mise à jour de la boîte à outils", lambda: self.verifier_maj_appli(a_la_main=True)),
+            ("Action : ouvrir le dossier des journaux", self.ouvrir_dossier_appli),
+            ("Action : voir les nouveautés de cette version", self.quoi_de_neuf),
+            ("Action : musique, lecture / pause", lambda: touche_media("playpause")),
+            ("Action : musique, morceau suivant", lambda: touche_media("suivant")),
+            ("Action : arrêter tous les sons du soundboard", stopper_sons),
+        ]
+        for nom, p in REGLAGES.get("profils", {}).items():
+            liste.append((f"Profil : {p.get('icone', '')} {nom}", lambda n=nom: self.activer_profil(n)))
+        for son in REGLAGES.get("sons", []):
+            liste.append((f"Son : {son['nom']}", lambda s=son["id"]: threading.Thread(target=jouer_son, args=(s,), daemon=True).start()))
+        return liste
+
+    def basculer_palette(self):
+        if any(nom == "palette" for nom, _ in self.flottants):
+            self.fermer_flottants()
+            return
+        self.fermer_flottants()
+        if self.racine.state() != "normal":
+            return
+        panneau = tk.Frame(self.racine, bg=CARTE, highlightthickness=1, highlightbackground=ACCENT, padx=12, pady=12)
+        panneau.place(relx=0.5, y=64, anchor="n", width=540)
+        panneau.lift()
+        self.flottants.append(("palette", panneau))
+        saisie = champ(panneau, 40)
+        saisie.config(font=police(12))
+        saisie.pack(fill="x", ipady=6)
+        liste = tk.Listbox(panneau, height=10, bg=CARTE, fg=TEXTE, selectbackground=melanger(CARTE, ACCENT, 0.3),
+                           selectforeground="white", relief="flat", highlightthickness=0, font=police(11),
+                           activestyle="none", exportselection=False)
+        liste.pack(fill="x", pady=(8, 0))
+        libelle(panneau, "↑ ↓ pour choisir   ·   Entrée pour valider   ·   Échap pour fermer", 8, ETEINT).pack(fill="x", pady=(6, 0))
+        toutes, visibles = self.commandes(), []
+
+        def filtrer(_evt=None):
+            mots = sans_accents(saisie.get()).split()
+            visibles[:] = [c for c in toutes if all(m in sans_accents(c[0]) for m in mots)]
+            liste.delete(0, "end")
+            for texte, _ in visibles:
+                liste.insert("end", "  " + texte)
+            if visibles:
+                liste.selection_set(0)
+
+        def bouger(pas):
+            if visibles:
+                i = (liste.curselection() or (0,))[0]
+                i = max(0, min(len(visibles) - 1, i + pas))
+                liste.selection_clear(0, "end")
+                liste.selection_set(i)
+                liste.see(i)
+            return "break"
+
+        def valider(_evt=None):
+            choix = liste.curselection()
+            if choix and choix[0] < len(visibles):
+                action = visibles[choix[0]][1]
+                self.fermer_flottants()
+                action()
+            return "break"
+        saisie.bind("<KeyRelease>", lambda e: e.keysym not in ("Up", "Down", "Return", "Escape") and filtrer())
+        saisie.bind("<Down>", lambda e: bouger(1))
+        saisie.bind("<Up>", lambda e: bouger(-1))
+        saisie.bind("<Return>", valider)
+        liste.bind("<ButtonRelease-1>", valider)
+        filtrer()
+        saisie.focus_set()
+
+    def fermer_flottants(self):
+        for _, panneau in self.flottants:
+            panneau.destroy()
+        self.flottants = []
+
+    def clic_ailleurs(self, evt):
+        """Un clic en dehors d'un panneau flottant le referme."""
+        if not self.flottants:
+            return
+        w = evt.widget
+        if w in (self.cloche,) or (isinstance(w, tk.Label) and "Rechercher" in str(w.cget("text"))):
+            return
+        for _, panneau in self.flottants:
+            if str(w).startswith(str(panneau)):
+                return
+        self.fermer_flottants()
+
+    # ---------- mini-fenêtre toujours visible ----------
+
+    def basculer_mini(self):
+        if self.mini:
+            self.fermer_mini()
+        else:
+            self.ouvrir_mini()
+
+    def ouvrir_mini(self):
+        if self.mini:
+            return
+        f = self.mini = tk.Toplevel(self.racine)
+        f.overrideredirect(True)          # pas de barre de titre
+        f.attributes("-topmost", True)    # toujours au-dessus des autres fenêtres
+        try:
+            f.attributes("-alpha", 0.94)
+        except tk.TclError:
+            pass
+        f.configure(bg=BORD)
+        dedans = tk.Frame(f, bg=FOND, padx=12, pady=7)
+        dedans.pack(padx=1, pady=1)
+        self.mini_valeurs = {}
+        for cle, nom, couleur in (("cpu", "CPU", CYAN), ("gpu", "GPU", ROSE), ("ram", "RAM", VIOLET)):
+            bloc = tk.Frame(dedans, bg=FOND)
+            bloc.pack(side="left", padx=7)
+            tk.Label(bloc, text=nom, bg=FOND, fg=GRIS, font=police(7, True)).pack()
+            self.mini_valeurs[cle] = tk.Label(bloc, text="--", bg=FOND, fg=couleur, font=police(14, True), width=4)
+            self.mini_valeurs[cle].pack()
+        position = REGLAGES.get("mini_pos")
+        f.update_idletasks()
+        if not (isinstance(position, list) and len(position) == 2):
+            position = [f.winfo_screenwidth() - f.winfo_reqwidth() - 30, 30]
+        x = max(0, min(int(position[0]), f.winfo_screenwidth() - 60))
+        y = max(0, min(int(position[1]), f.winfo_screenheight() - 40))
+        f.geometry(f"+{x}+{y}")
+        prise = {}
+
+        def attraper(evt):
+            prise["x"], prise["y"] = evt.x_root - f.winfo_x(), evt.y_root - f.winfo_y()
+
+        def glisser(evt):
+            if prise:
+                f.geometry(f"+{evt.x_root - prise['x']}+{evt.y_root - prise['y']}")
+
+        def lacher(_evt):
+            REGLAGES["mini_pos"] = [f.winfo_x(), f.winfo_y()]
+            enregistrer_reglages()
+
+        def menu(evt):
+            m = tk.Menu(f, tearoff=0, bg=CARTE, fg=TEXTE, activebackground=ACCENT, activeforeground=FOND)
+            m.add_command(label="Ouvrir la boîte à outils", command=self.montrer)
+            m.add_command(label="Couper / réactiver le micro", command=self.basculer_micro)
+            m.add_separator()
+            m.add_command(label="Fermer la mini-fenêtre", command=self.fermer_mini)
+            m.tk_popup(evt.x_root, evt.y_root)
+        for w in [f, dedans] + [e for b in dedans.winfo_children() for e in [b] + b.winfo_children()]:
+            w.bind("<Button-1>", attraper)
+            w.bind("<B1-Motion>", glisser)
+            w.bind("<ButtonRelease-1>", lacher)
+            w.bind("<Double-Button-1>", lambda e: self.montrer())
+            w.bind("<Button-3>", menu)
+        if not REGLAGES.get("mini_fenetre"):
+            REGLAGES["mini_fenetre"] = True
+            enregistrer_reglages()
+        self.maj_mini()
+        self.maj_actions_rapides()
+
+    def fermer_mini(self):
+        if self.mini:
+            self.mini.destroy()
+            self.mini = None
+        if REGLAGES.get("mini_fenetre"):
+            REGLAGES["mini_fenetre"] = False
+            enregistrer_reglages()
+        self.maj_actions_rapides()
+
+    def maj_mini(self):
+        if not self.mini:
+            return
+        m = getattr(self, "dernieres_mesures", None) or {}
+        cpu, gpu, ram = m.get("cpu_temp"), m.get("gpu"), m.get("ram")
+        self.mini_valeurs["cpu"].config(text=f"{cpu:.0f}°" if cpu is not None else "--",
+                                        fg=ROUGE if cpu is not None and cpu >= ALERTE_CPU else CYAN)
+        self.mini_valeurs["gpu"].config(text=f"{gpu[0]:.0f}°" if gpu else "--",
+                                        fg=ROUGE if gpu and gpu[0] >= ALERTE_GPU else ROSE)
+        self.mini_valeurs["ram"].config(text=f"{ram[0] / ram[1] * 100:.0f}%" if ram else "--")
+
+    # ---------- icône près de l'horloge ----------
+
+    def creer_icone(self, demander=True):
+        """Crée l'icône avec pystray (+ Pillow pour dessiner l'image)."""
+        if self.icone:
+            return True
+        try:
+            import pystray
+            from PIL import Image, ImageDraw
+        except ImportError:
+            if not demander or not messagebox.askyesno(
+                    "Icône près de l'horloge",
+                    "Pour se ranger près de l'horloge, il faut 2 petites librairies (pystray et Pillow).\n\n"
+                    "Les installer maintenant ? (environ 30 secondes)"):
+                return False
+            if not installer_paquets("pystray", "pillow"):
+                messagebox.showerror("Oups", "Installation ratée. Dans PowerShell :\npython -m pip install pystray pillow")
+                return False
+            import pystray
+            from PIL import Image, ImageDraw
+
+        try:   # le logo de l'appli s'il existe
+            image = Image.open(DOSSIER_APPLI / "logo.png").convert("RGBA").resize((64, 64))
+        except Exception:   # sinon on dessine une petite caisse à outils
+            image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            d = ImageDraw.Draw(image)
+            d.rounded_rectangle([4, 20, 60, 58], radius=8, fill=CYAN)
+            d.rounded_rectangle([22, 8, 42, 24], radius=5, outline=CYAN, width=5)
+            d.rectangle([4, 34, 60, 38], fill=FOND)
+
+        envoyer = self.file_icone.put   # l'icône tourne dans un autre fil : elle passe par la file
+        menu = pystray.Menu(
+            pystray.MenuItem("Ouvrir", lambda: envoyer("ouvrir"), default=True),
+            pystray.MenuItem("Couper / réactiver le micro", lambda: envoyer("micro_basculer")),
+            pystray.MenuItem("Mini-fenêtre", lambda: envoyer("mini")),
+            pystray.MenuItem("Quitter", lambda: envoyer("quitter")),
+        )
+        try:
+            self.icone = pystray.Icon("boite_a_outils", image, "Boîte à outils de Crz", menu)
+            self.icone.run_detached()
+        except Exception:   # icône impossible sur ce PC : on fera sans
+            self.icone = None
+            return False
+        return True
+
+    def lire_file_icone(self):
+        """Toutes les 200 ms, on regarde si un autre fil nous a demandé quelque chose."""
+        try:
+            while True:
+                ordre = self.file_icone.get_nowait()
+                if ordre == "ouvrir":
+                    self.montrer()
+                elif ordre == "quitter":
+                    self.quitter()
+                    return
+                elif ordre == "micro_basculer":
+                    self.basculer_micro()
+                elif ordre == "mini":
+                    self.basculer_mini()
+                elif isinstance(ordre, tuple) and ordre[0] == "profil":
+                    self.activer_profil(ordre[1])
+                elif isinstance(ordre, tuple) and ordre[0] == "micro":
+                    self.afficher_micro()
+        except queue.Empty:
+            pass
+        self.racine.after(200, self.lire_file_icone)
+
+    def montrer(self):
+        self.racine.deiconify()
+        self.racine.lift()
+        self.racine.focus_force()
+        if getattr(self, "nouveautes_en_attente", False):
+            self.nouveautes_en_attente = False
+            self.racine.after(400, self.quoi_de_neuf)
+
+    def fermer(self):
+        if not REGLAGES["fermer_vers_icone"]:
+            self.quitter()
+        elif self.creer_icone():
+            if self.coffre and self.coffre.mdp_maitre:   # sécurité : on verrouille le coffre en cachant la fenêtre
+                self.coffre.verrouiller()
+            self.racine.withdraw()
+        else:
+            self.racine.iconify()   # pas d'icône possible : on réduit dans la barre des tâches
+
+    def tout_enregistrer(self):
+        if getattr(self, "stats_a_sauver", False):
+            ecrire_json(FICHIER_STATS, self.stats)
+            self.stats_a_sauver = False
+        if hasattr(self, "histo"):
+            self.sauver_historique()
+
+    def arret_windows(self):
+        """Windows s'éteint : on enregistre ce qui doit l'être, et on note que ce n'est pas un plantage."""
+        journal("Windows ferme la session")
+        self.tout_enregistrer()
+        noter_arret_propre()
+
+    def quitter(self):
+        self.tout_enregistrer()
+        if self.session:
+            self.fin_session()   # remet le plan d'alim et les applis
+        if self.icone:
+            self.icone.stop()
+        if getattr(self, "serveur", None):
+            self.serveur.shutdown()
+        self.racine.destroy()
+
+    # ---------- mises à jour de la boîte à outils ----------
+
+    def verifier_maj_appli(self, au_demarrage=False, a_la_main=False):
+        """Regarde s'il y a une nouvelle version (au démarrage puis toutes les 6 h)."""
+        def ensuite(infos):
+            if isinstance(infos, dict):
+                self.maj_dispo = infos
+                self.bouton_maj_appli.changer(f"⬇  Mise à jour v{infos['version']}")
+                self.bouton_maj_appli.activer(True)
+                self.bouton_maj_appli.pack(side="right", padx=(8, 0))
+                if au_demarrage and REGLAGES.get("maj_auto", True) and not self.session:
+                    self.lancer_maj_appli(sans_question=True)
+                else:
+                    self.tache("maj_appli", "info", f"Version {infos['version']} de la boîte à outils disponible",
+                               infos.get("notes", ""), "Installer", self.lancer_maj_appli)
+            elif a_la_main:
+                self.toast(f"Tu as déjà la dernière version (v{VERSION})")
+            self.derniere_verif_maj = time.strftime("%H:%M")
+            if not a_la_main:
+                self.racine.after(6 * 3600 * 1000, self.verifier_maj_appli)
+        self.en_fond(chercher_maj, ensuite)
+
+    def lancer_maj_appli(self, sans_question=False):
+        infos = self.maj_dispo
+        if not infos:
+            return
+        if not sans_question:
+            notes = infos.get("notes", "")
+            if not messagebox.askyesno("Mise à jour", f"Installer la version {infos['version']} ?\n\n{notes}\n\n"
+                                                      "La boîte à outils va redémarrer toute seule."):
+                return
+        self.bouton_maj_appli.changer("⏳  Installation...")
+        self.bouton_maj_appli.activer(False)
+
+        def ensuite(erreur):
+            if isinstance(erreur, Exception):
+                erreur = str(erreur)
+            if erreur:
+                self.bouton_maj_appli.changer(f"⬇  Mise à jour v{infos['version']}")
+                self.bouton_maj_appli.activer(True)
+                messagebox.showerror("Mise à jour", f"Mise à jour impossible : {erreur}\nTa version actuelle continue de marcher.")
+                return
+            # On relance la nouvelle version, puis on ferme celle-ci
+            arguments = [sys.executable, str(Path(__file__).resolve()), "--apres-maj"]
+            if self.racine.state() == "withdrawn":
+                arguments.append("--cache")
+            journal(f"Mise à jour installée (v{infos['version']}), redémarrage : {arguments}")
+            drapeaux = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            try:   # « breakaway » : la nouvelle version survit même si l'ancienne était dans un groupe de processus
+                subprocess.Popen(arguments, creationflags=drapeaux | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0),
+                                 close_fds=True)
+            except OSError:
+                subprocess.Popen(arguments, creationflags=drapeaux, close_fds=True)
+            self.quitter()
+        self.en_fond(lambda: installer_maj(infos), ensuite)
+
+    # ---------- « Quoi de neuf » ----------
+
+    def annoncer_nouveautes(self):
+        """Au premier lancement d'une nouvelle version, on montre ce qui a changé."""
+        if REGLAGES.get("version_vue") == VERSION:
+            return
+        REGLAGES["version_vue"] = VERSION
+        enregistrer_reglages()
+        if self.racine.state() == "normal":
+            self.quoi_de_neuf()
+        else:   # lancée cachée : on le montrera quand tu ouvriras la fenêtre
+            self.nouveautes_en_attente = True
+            self.notifier(f"Boîte à outils mise à jour (v{VERSION})", "Ouvre-la pour voir les nouveautés.", "info", self.montrer)
+
+    def quoi_de_neuf(self):
+        f = tk.Toplevel(self.racine, bg=CARTE, padx=26, pady=20)
+        f.title("Quoi de neuf")
+        f.transient(self.racine)
+        f.resizable(False, False)
+        f.geometry(f"+{self.racine.winfo_rootx() + 240}+{self.racine.winfo_rooty() + 40}")   # la hauteur s'adapte au texte
+        version, nom, points = NOUVEAUTES[0]
+        libelle(f, f"Quoi de neuf dans la v{version}", 16, TEXTE, True).pack(fill="x")
+        libelle(f, nom, 11, ACCENT, True).pack(fill="x", pady=(0, 10))
+        for point in points:
+            ligne = tk.Frame(f, bg=CARTE)
+            ligne.pack(fill="x", pady=3)
+            tk.Label(ligne, text="•", bg=CARTE, fg=ACCENT, font=police(11, True)).pack(side="left", anchor="n", padx=(0, 8))
+            libelle(ligne, point, 10, largeur=520).pack(side="left", fill="x")
+        libelle(f, "Astuce : chaque page a une phrase d'explication sous son titre, et Ctrl+K ouvre la recherche.",
+                9, GRIS, largeur=540).pack(fill="x", pady=(12, 0))
+        Bouton(f, "C'est parti", f.destroy, "principal").pack(anchor="e", pady=(14, 0))
+
+    def verifier_stabilite(self):
+        """Regarde si la boîte s'est arrêtée brutalement ces derniers jours (voir noter_demarrage)."""
+        arrets = charger_json(FICHIER_ARRETS, [])
+        limite = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3 * 86400))
+        recents = [a for a in arrets if isinstance(a, dict) and str(a.get("vu", "")) >= limite and a.get("version") == VERSION]
+        if len(recents) >= 2:
+            self.tache("stabilite", "attention", f"La boîte à outils s'est arrêtée {len(recents)} fois sans prévenir",
+                       "Ces 3 derniers jours, avec cette version. Regarde le diagnostic.", "Diagnostic",
+                       lambda: self.aller_a("Santé du PC", "Diagnostic"), prevenir=False)
+
+
+def methode(fonction):
+    """Range une fonction dans la classe BoiteAOutils.
+    Ça permet d'écrire la fenêtre en plusieurs chapitres (un par page) plutôt qu'en un seul bloc énorme."""
+    setattr(BoiteAOutils, fonction.__name__, fonction)
+    return fonction
+
+
+# =============================================================
+#  ◉ ACCUEIL  -  tout le PC sur un écran
+# =============================================================
+
+NOMS_VENTILOS = {"cpu fan": "Ventilateur du processeur", "pump fan": "Pompe du watercooling",
+                 "gpu fan": "Ventilateur de la carte graphique"}
+
+
+def nom_ventilo(nom):
+    """« CPU Fan » -> « Ventilateur du processeur », « System Fan #2 » -> « Ventilateur du boîtier 2 »..."""
+    n = nom.lower().strip()
+    numero = re.search(r"(\d+)\s*$", n)
+    suffixe = f" {numero.group(1)}" if numero else ""
+    if n.startswith("system fan") or n.startswith("chassis fan") or n.startswith("case fan"):
+        return "Ventilateur du boîtier" + suffixe
+    for debut, propre in NOMS_VENTILOS.items():
+        if n.startswith(debut):
+            return propre + suffixe
+    return nom
+
+
+@methode
+def page_accueil(self, cadre):
+    # ----- Ligne 1 : quatre tuiles de mesures -----
+    ligne1 = tk.Frame(cadre, bg=FOND)
+    ligne1.pack(fill="x")
+    self.tuiles = {}
+    for col, (cle, titre, couleur, aide) in enumerate((
+            ("cpu", "Processeur", CYAN, "Température du processeur. En jeu, 70 à 85 °C est normal pour ton i5."),
+            ("gpu", "Carte graphique", ROSE, "Température de la carte graphique. En jeu, 60 à 75 °C est normal."),
+            ("ram", "Mémoire", TEXTE, "La mémoire vive utilisée par tout ce qui est ouvert."),
+            ("net", "Connexion", TEXTE, "Ce que ton PC télécharge et envoie en ce moment."))):
+        ligne1.columnconfigure(col, weight=1, uniform="tuile")
+        carte, self.tuiles[cle] = self.tuile(ligne1, titre, couleur)
+        carte.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 5, 0 if col == 3 else 5))
+        Bulle(carte, aide)
+
+    # ----- Ligne 2 : graphique + (À faire, actions rapides) -----
+    ligne2 = tk.Frame(cadre, bg=FOND)
+    ligne2.pack(fill="both", expand=True, pady=10)
+    ligne2.columnconfigure(0, weight=1)
+    ligne2.rowconfigure(0, weight=1)
+    graph = Carte(ligne2, padx=14, pady=10)
+    graph.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+    tete = tk.Frame(graph, bg=CARTE)
+    tete.pack(fill="x")
+    petit_titre(tete, "Températures").pack(side="left")
+    self.periode = "10 min"
+    self.boutons_periode = {}
+    for nom in PERIODES:
+        b = tk.Label(tete, text=nom, bg=CARTE, fg=GRIS, font=police(8, True), padx=8, pady=2, cursor="hand2")
+        b.pack(side="left", padx=(8 if nom == "10 min" else 2, 0))
+        b.bind("<Button-1>", lambda e, n=nom: self.choisir_periode(n))
+        self.boutons_periode[nom] = b
+    self.legende_alerte = tk.Label(tete, text="", bg=CARTE, fg=ORANGE, font=police(8, True))
+    self.legende_alerte.pack(side="right")
+    tk.Label(tete, text="● GPU   ", bg=CARTE, fg=ROSE, font=police(8, True)).pack(side="right")
+    tk.Label(tete, text="● CPU   ", bg=CARTE, fg=CYAN, font=police(8, True)).pack(side="right")
+    self.graphique = tk.Canvas(graph, bg=CARTE, height=150, width=1, highlightthickness=0)
+    self.graphique.pack(fill="both", expand=True, pady=(6, 0))
+    self.graphique.bind("<Configure>", lambda e: self.dessiner_graphique())
+    self.charger_historique()
+    self.choisir_periode("10 min")
+
+    droite = tk.Frame(ligne2, bg=FOND, width=326)
+    droite.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+    droite.pack_propagate(False)
+    a_faire = Carte(droite, padx=14, pady=10)
+    a_faire.pack(fill="both", expand=True)
+    tete = tk.Frame(a_faire, bg=CARTE)
+    tete.pack(fill="x")
+    petit_titre(tete, "À faire").pack(side="left")
+    self.compteur_a_faire = tk.Label(tete, text="", bg=CARTE, fg=VERT, font=police(8, True))
+    self.compteur_a_faire.pack(side="right")
+    self.cadre_a_faire = tk.Frame(a_faire, bg=CARTE)
+    self.cadre_a_faire.pack(fill="both", expand=True, pady=(4, 0))
+
+    actions = Carte(droite, padx=12, pady=10)
+    actions.pack(fill="x", pady=(10, 0))
+    petit_titre(actions, "Actions rapides").pack(fill="x", pady=(0, 4))
+    grille = tk.Frame(actions, bg=CARTE)
+    grille.pack(fill="x")
+    self.infos_actions = {}
+    for i, (cle, icone, titre, couleur, commande, aide) in enumerate((
+            ("jeu", "🎮", "Mode jeu", CYAN, self.mode_jeu, "Active le profil Jeu : plan Performances, ferme les applis choisies."),
+            ("micro", "🎙", "Micro", ROSE, self.basculer_micro, "Coupe ou réactive ton micro (celui choisi dans les Réglages)."),
+            ("profil", "🎛", "Profil", VIOLET, self.menu_profils, "Change de profil en un clic."),
+            ("mini", "▣", "Mini-fenêtre", VERT, self.basculer_mini, "Une petite fenêtre toujours visible avec les températures."))):
+        grille.columnconfigure(i % 2, weight=1, uniform="a")
+        self.infos_actions[cle] = self.action_rapide(grille, icone, titre, couleur, commande, i // 2, i % 2)
+        Bulle(self.infos_actions[cle].master, aide)
+
+    # ----- Ligne 3 : disques, jeu, musique -----
+    ligne3 = tk.Frame(cadre, bg=FOND)
+    ligne3.pack(fill="x")
+    for col, poids in enumerate((6, 5, 6)):
+        ligne3.columnconfigure(col, weight=poids, uniform="bas")
+    disques = Carte(ligne3, padx=14, pady=10)
+    disques.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+    tete = tk.Frame(disques, bg=CARTE)
+    tete.pack(fill="x")
+    petit_titre(tete, "Disques").pack(side="left")
+    self.dash_disques = tk.Label(tete, text="", bg=CARTE, fg=VERT, font=police(8, True))
+    self.dash_disques.pack(side="right")
+    self.cadre_dash_disques = tk.Frame(disques, bg=CARTE)
+    self.cadre_dash_disques.pack(fill="x", pady=(4, 0))
+    self.lignes_disques = {}
+
+    jeu = Carte(ligne3, padx=14, pady=10)
+    jeu.grid(row=0, column=1, sticky="nsew", padx=5)
+    petit_titre(jeu, "Jeu").pack(fill="x")
+    self.dash_jeu = tk.Label(jeu, text="Aucun jeu", bg=CARTE, fg=GRIS, font=police(14, True), anchor="w")
+    self.dash_jeu.pack(fill="x", pady=(4, 2))
+    self.dash_semaine = tk.Label(jeu, text="", bg=CARTE, fg=GRIS, font=police(9), anchor="w")
+    self.dash_semaine.pack(fill="x")
+    self.dash_top = tk.Label(jeu, text="", bg=CARTE, fg=GRIS, font=police(9), anchor="w")
+    self.dash_top.pack(fill="x")
+
+    musique = Carte(ligne3, padx=14, pady=10)
+    musique.grid(row=0, column=2, sticky="nsew", padx=(5, 0))
+    petit_titre(musique, "Musique · Spotify").pack(fill="x")
+    self.dash_musique = tk.Label(musique, text="Rien en lecture", bg=CARTE, fg=GRIS, font=police(11, True), anchor="w")
+    self.dash_musique.pack(fill="x", pady=(4, 0))
+    self.dash_artiste = tk.Label(musique, text="", bg=CARTE, fg=GRIS, font=police(9), anchor="w")
+    self.dash_artiste.pack(fill="x")
+    boutons = tk.Frame(musique, bg=CARTE)
+    boutons.pack(fill="x", pady=(6, 0))
+    for col, (symbole, action, aide) in enumerate((("⏮", "precedent", "Morceau précédent"), ("⏯", "playpause", "Lecture / pause"),
+                                                   ("⏭", "suivant", "Morceau suivant"), ("🔉", "volmoins", "Baisser le volume"),
+                                                   ("🔊", "volplus", "Monter le volume"))):
+        boutons.columnconfigure(col, weight=1, uniform="m")
+        b = tk.Label(boutons, text=symbole, bg=SURFACE, fg=CYAN, font=police(10), cursor="hand2", pady=3)
+        b.grid(row=0, column=col, sticky="ew", padx=2)
+        b.bind("<Button-1>", lambda e, a=action: touche_media(a))
+        b.bind("<Enter>", lambda e, w=b: w.config(bg=SURVOL))
+        b.bind("<Leave>", lambda e, w=b: w.config(bg=SURFACE))
+        Bulle(b, aide)
+
+    self.titre_musique = None
+    self.micro_coupe = None
+    self.temps_disques = []
+    self.max = {"cpu": 0, "gpu": 0}
+    self.compte = {}                 # combien de relevés de suite un souci dure (pour ne pas alerter pour 2 secondes)
+    self.ventilos_vus = {}           # vitesse max vue pour chaque ventilateur
+    self.dernier_reseau = None
+    self.max_down = 0
+    self.depart = time.time()
+    self.dessiner_a_faire()
+    self.racine.after(500, self.maj_mesures)
+    self.racine.after(800, self.maj_disques_dash)
+    self.racine.after(1500, self.suivre_musique)
+    self.racine.after(5 * 60 * 1000, self.sauver_historique_regulierement)
+
+
+@methode
+def tuile(self, parent, titre, couleur):
+    """Une tuile de mesure : titre + état, grosse valeur + unité, détail, jauge."""
+    c = Carte(parent, padx=14, pady=10)
+    petit_titre(c, titre).pack(fill="x")
+    ligne = tk.Frame(c, bg=CARTE)
+    ligne.pack(fill="x", pady=(2, 0))
+    valeur = tk.Label(ligne, text="--", bg=CARTE, fg=couleur, font=police(26, True))
+    valeur.pack(side="left")
+    unite = tk.Label(ligne, text="", bg=CARTE, fg=GRIS, font=police(11, True))
+    unite.pack(side="left", anchor="s", pady=(0, 8), padx=(2, 0))
+    etat = tk.Label(ligne, text="", bg=CARTE, fg=VERT, font=police(8, True))   # NORMAL, CHAUD, BRÛLANT...
+    etat.pack(side="right", anchor="s", pady=(0, 10))
+    detail = tk.Label(c, text="", bg=CARTE, fg=GRIS, font=police(9), anchor="w")
+    detail.pack(fill="x")
+    jauge = Jauge(c, couleur)
+    jauge.pack(fill="x", pady=(6, 0))
+    return c, {"etat": etat, "valeur": valeur, "unite": unite, "detail": detail, "jauge": jauge, "couleur": couleur}
+
+
+@methode
+def remplir_tuile(self, t, valeur, unite, detail, fraction, etat, couleur_etat, couleur_valeur=None, couleur_jauge=None):
+    t["valeur"].config(text=valeur, fg=couleur_valeur or t["couleur"])
+    t["unite"].config(text=unite)
+    t["detail"].config(text=detail)
+    t["etat"].config(text=espacer(etat), fg=couleur_etat)
+    t["jauge"].regler(fraction, couleur_jauge or couleur_valeur or t["couleur"])
+
+
+@methode
+def action_rapide(self, parent, icone, titre, couleur, commande, rangee, colonne):
+    """Un bouton carré : icône colorée + titre, et une petite ligne d'état dessous. Renvoie le label de l'état."""
+    b = tk.Frame(parent, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, cursor="hand2", padx=9, pady=6)
+    b.grid(row=rangee, column=colonne, sticky="nsew", padx=3, pady=3)
+    haut = tk.Frame(b, bg=SURFACE)
+    haut.pack(fill="x")
+    ic = tk.Label(haut, text=icone, bg=melanger(SURFACE, couleur, 0.25), fg=TEXTE, font=police(10), width=2)
+    ic.pack(side="left")
+    nom = tk.Label(haut, text=titre, bg=SURFACE, fg=TEXTE, font=police(10, True))
+    nom.pack(side="left", padx=(8, 0))
+    info = tk.Label(b, text="", bg=SURFACE, fg=GRIS, font=police(8), anchor="w")
+    info.pack(fill="x", pady=(3, 0))
+
+    def teinte(fond):
+        for w in (b, haut, nom, info):
+            w.config(bg=fond)
+    for w in (b, haut, ic, nom, info):
+        w.bind("<Button-1>", lambda e: commande())
+        w.bind("<Enter>", lambda e: teinte(SURVOL))
+        w.bind("<Leave>", lambda e: teinte(SURFACE))
+    return info
+
+
+@methode
+def maj_actions_rapides(self):
+    """Met à jour la petite ligne d'état de chaque action rapide."""
+    infos = getattr(self, "infos_actions", None)
+    if not infos:
+        return
+    actif = REGLAGES.get("profil_actif")
+    infos["jeu"].config(text="activé ✓" if actif == "Jeu" else "activer le profil Jeu", fg=VERT if actif == "Jeu" else GRIS)
+    infos["profil"].config(text=f"{actif or 'aucun'}  ▾")
+    infos["mini"].config(text="affichée · cacher" if self.mini else "cachée · afficher", fg=VERT if self.mini else GRIS)
+    coupe = getattr(self, "micro_coupe", None)
+    if coupe is None:
+        infos["micro"].config(text="état inconnu", fg=GRIS)
+    elif coupe:
+        infos["micro"].config(text="COUPÉ · réactiver", fg=ROUGE)
+    else:
+        infos["micro"].config(text="actif · couper", fg=VERT)
+
+
+@methode
+def mode_jeu(self):
+    if "Jeu" in REGLAGES.get("profils", {}):
+        self.activer_profil("Jeu")
+    else:
+        self.aller_a("Profils")
+
+
+@methode
+def menu_profils(self, evt=None):
+    menu = tk.Menu(self.racine, tearoff=0, bg=CARTE, fg=TEXTE, activebackground=ACCENT, activeforeground=FOND)
+    for nom, p in REGLAGES.get("profils", {}).items():
+        coche = "✓ " if nom == REGLAGES.get("profil_actif") else "    "
+        menu.add_command(label=f"{coche}{p.get('icone', '')} {nom}", command=lambda n=nom: self.activer_profil(n))
+    menu.add_separator()
+    menu.add_command(label="Modifier les profils…", command=lambda: self.aller_a("Profils"))
+    x, y = self.racine.winfo_pointerxy()
+    menu.tk_popup(x, y)
+
+
+@methode
+def dessiner_a_faire(self):
+    """La carte « À faire » de l'accueil : les 3 points les plus importants, chacun avec son bouton."""
+    vider(self.cadre_a_faire)
+    taches = self.taches_triees()
+    importantes = [t for t in taches if t["niveau"] in ("alerte", "attention")]
+    if not taches:
+        self.compteur_a_faire.config(text=espacer("rien"), fg=VERT)
+        libelle(self.cadre_a_faire, "✓  Rien à faire", 13, VERT, True).pack(fill="x", pady=(14, 2))
+        libelle(self.cadre_a_faire, "Ton PC est en forme. Si quelque chose demande ton attention "
+                                    "(mise à jour, disque plein, surchauffe...), ça s'affichera ici.", 9, GRIS,
+                largeur=280).pack(fill="x")
+        return
+    couleur = ROUGE if any(t["niveau"] == "alerte" for t in taches) else (ORANGE if importantes else CYAN)
+    self.compteur_a_faire.config(text=espacer(f"{len(taches)} point" + ("s" if len(taches) > 1 else "")), fg=couleur)
+    for t in taches[:3]:
+        ligne = tk.Frame(self.cadre_a_faire, bg=CARTE)
+        ligne.pack(fill="x", pady=4)
+        tk.Label(ligne, text="●", bg=CARTE, fg=COULEUR_NIVEAU.get(t["niveau"], CYAN), font=police(11)).pack(side="left", anchor="n", padx=(0, 8))
+        if t["action"]:
+            Bouton(ligne, t["bouton"], t["action"], petit=True).pack(side="right", anchor="n", padx=(6, 0))
+        libelle(ligne, t["texte"], 9, TEXTE, True, largeur=190).pack(side="left", fill="x", expand=True, anchor="n")
+    if len(taches) > 3:
+        plus = tk.Label(self.cadre_a_faire, text=pluriel(f"+ {len(taches) - 3} autre(s) dans le bilan  ›", len(taches) - 3), bg=CARTE, fg=ACCENT,
+                        font=police(9), cursor="hand2", anchor="w")
+        plus.pack(fill="x", pady=(2, 0))
+        plus.bind("<Button-1>", lambda e: self.aller_a("Santé du PC", "Bilan"))
+
+
+# ---------- les mesures, toutes les 2 secondes ----------
+
+@methode
+def dure(self, cle, vrai, combien):
+    """Renvoie True quand `vrai` est vrai depuis `combien` relevés de suite (évite les fausses alertes)."""
+    self.compte[cle] = self.compte.get(cle, 0) + 1 if vrai else 0
+    return self.compte[cle] >= combien
+
+
+@staticmethod
+def _etat_temperature(temp, alerte):
+    """Un mot simple + sa couleur pour une température."""
+    if temp >= alerte:
+        return "Brûlant", ROUGE
+    if temp >= alerte - 10:
+        return "Chaud", ORANGE
+    return "Normal", VERT
+
+
+BoiteAOutils.etat_temperature = _etat_temperature
+
+
+@methode
+def maj_mesures(self):
+    def ensuite(m):
+        if isinstance(m, Exception) or not m:
+            m = {"gpu": None, "ram": None, "cpu_temp": None, "cpu_usage": None, "disques": [], "hwinfo": False,
+                 "reseau": None, "ventilos": [], "temps": [], "watts": {}}
+        t = self.tuiles
+        refroidir = lambda: self.aller_a("Santé du PC", "Refroidissement")
+        # --- Processeur ---
+        if m["cpu_temp"] is not None:
+            temp = m["cpu_temp"]
+            self.max["cpu"] = max(self.max["cpu"], temp)
+            etat, couleur = self.etat_temperature(temp, ALERTE_CPU)
+            charge = f"Charge {m['cpu_usage']:.0f} % · " if m["cpu_usage"] is not None else ""
+            self.remplir_tuile(t["cpu"], f"{temp:.0f}", "°C", f"{charge}max {self.max['cpu']:.0f} °C",
+                               temp / 100, etat, couleur, ROUGE if couleur == ROUGE else None)
+            if self.dure("cpu_chaud", temp >= ALERTE_CPU, 5):
+                if self.tache("cpu_chaud", "alerte", f"Processeur brûlant ({temp:.0f} °C)",
+                              f"Il dépasse ton alerte de {ALERTE_CPU} °C. Vérifie le ventilateur et la pompe.", "Voir", refroidir):
+                    self.racine.bell()
+            elif self.dure("cpu_frais", temp < ALERTE_CPU - 3, 5):
+                self.tache_finie("cpu_chaud")
+        else:
+            charge = f"Charge {m['cpu_usage']:.0f} % · " if m.get("cpu_usage") is not None else ""
+            self.remplir_tuile(t["cpu"], "--", "°C", charge + "capteur absent", 0, "?", GRIS, GRIS)
+        # --- Carte graphique ---
+        if m["gpu"]:
+            temp, util, vram, watts = m["gpu"]
+            self.max["gpu"] = max(self.max["gpu"], temp)
+            etat, couleur = self.etat_temperature(temp, ALERTE_GPU)
+            self.remplir_tuile(t["gpu"], f"{temp:.0f}", "°C", f"Charge {util} % · {watts:.0f} W",
+                               temp / 100, etat, couleur, ROUGE if couleur == ROUGE else None)
+            self.vram = vram
+            if self.dure("gpu_chaud", temp >= ALERTE_GPU, 5):
+                if self.tache("gpu_chaud", "alerte", f"Carte graphique brûlante ({temp:.0f} °C)",
+                              f"Elle dépasse ton alerte de {ALERTE_GPU} °C.", "Voir", refroidir):
+                    self.racine.bell()
+            elif self.dure("gpu_frais", temp < ALERTE_GPU - 3, 5):
+                self.tache_finie("gpu_chaud")
+        else:
+            self.remplir_tuile(t["gpu"], "--", "°C", "carte NVIDIA introuvable", 0, "?", GRIS, GRIS)
+        # --- Mémoire ---
+        if m["ram"]:
+            utilise, total = m["ram"]
+            pct = utilise / total * 100
+            couleur = ROUGE if pct >= 90 else (ORANGE if pct >= 80 else VERT)
+            vram = getattr(self, "vram", None)
+            self.remplir_tuile(t["ram"], f"{utilise:.1f}".replace(".", ","), f"/ {total:.0f} Go",
+                               f"VRAM {vram / 1024:.1f} Go utilisés".replace(".", ",") if vram else "",
+                               pct / 100, f"{pct:.0f} %", couleur, couleur_jauge=VIOLET)
+            if self.dure("ram_pleine", pct >= 92, 15):
+                self.tache("ram", "attention", f"Mémoire presque pleine ({pct:.0f} %)",
+                           "Ferme des applis ou des onglets du navigateur pour éviter les ralentissements.", "", None)
+            elif pct < 85:
+                self.tache_finie("ram")
+        # --- Connexion : on compare avec le relevé d'il y a 2 s ---
+        vitesse = debit(self.dernier_reseau, m.get("reseau"))
+        self.dernier_reseau = m.get("reseau") or self.dernier_reseau
+        if vitesse:
+            down, up = vitesse
+            self.max_down = max(self.max_down, down)
+            self.remplir_tuile(t["net"], f"{down:.1f}".replace(".", ",") if down < 10 else f"{down:.0f}",
+                               "Mbit/s ↓", f"↑ {up:.1f} Mbit/s envoi".replace(".", ","),
+                               down / max(self.max_down, 50), "Active" if down + up > 0.2 else "Calme", VERT, couleur_jauge=VERT)
+        elif m.get("reseau") is None:
+            self.remplir_tuile(t["net"], "--", "Mbit/s", "mesure impossible", 0, "?", GRIS, GRIS)
+        # --- Disques (températures) ---
+        if m["disques"]:
+            self.temps_disques = m["disques"]
+        # --- Capteurs absents ? (on laisse 20 s au démarrage) ---
+        if not m["hwinfo"] and time.time() - self.depart > 20:
+            self.tache("capteurs", "info", "Température du processeur indisponible",
+                       "Lance LibreHardwareMonitor (avec son serveur web) pour l'avoir.", "Diagnostic",
+                       lambda: self.aller_a("Santé du PC", "Diagnostic"))
+        elif m["hwinfo"]:
+            self.tache_finie("capteurs")
+        # --- Ventilateurs : l'un d'eux s'est-il arrêté ? ---
+        for v in m.get("ventilos", []):
+            cle = f"{v['ou']} / {v['nom']}"
+            self.ventilos_vus[cle] = max(self.ventilos_vus.get(cle, 0), v["rpm"])
+            demande = v.get("pct")
+            arrete = (v["ou"] == "Carte mère" and self.ventilos_vus[cle] > 300 and v["rpm"] < 50
+                      and (demande is None or demande > 20))
+            if self.dure("ventilo " + cle, arrete, 5):
+                if self.tache("ventilo " + cle, "alerte", f"{nom_ventilo(v['nom'])} à l'arrêt",
+                              "Il tournait tout à l'heure et ne tourne plus. Regarde-le vite : sans lui, ça chauffe.",
+                              "Voir", refroidir):
+                    self.racine.bell()
+            elif not arrete:
+                self.tache_finie("ventilo " + cle)
+        # --- Le reste de l'appli se sert de ces mesures ---
+        self.dernieres_mesures = m
+        self.derniere_vitesse = vitesse or getattr(self, "derniere_vitesse", None)
+        cpu, gpu = m["cpu_temp"], (m["gpu"][0] if m["gpu"] else None)
+        self.noter("cpu_max", cpu)
+        self.noter("gpu_max", gpu)
+        self.noter_partie(cpu, gpu)
+        self.ajouter_historique(cpu, gpu)
+        self.dessiner_graphique()
+        self.maj_actions_rapides()
+        self.maj_mini()
+        if self.navigation.actuelle == "Santé du PC":
+            self.dessiner_refroidissement()
+        self.racine.after(2000, self.maj_mesures)   # et on recommence dans 2 s
+    self.en_fond(lire_tout, ensuite)
+
+
+@methode
+def maj_disques_dash(self):
+    """Place libre + température de chaque disque (toutes les 30 s)."""
+    def ensuite(lecteurs):
+        if isinstance(lecteurs, Exception):
+            lecteurs = []
+        temps = {}
+        for modele, t, lettre in self.temps_disques:
+            lettre = lettre or lettre_du_disque(modele)
+            if lettre:
+                temps.setdefault(lettre, t)
+        a_surveiller = 0
+        seuil = int(REGLAGES.get("alerte_disque", 90)) / 100
+        for lettre, total, libre in lecteurs:
+            if lettre not in self.lignes_disques:
+                l = tk.Frame(self.cadre_dash_disques, bg=CARTE)
+                l.pack(fill="x", pady=2)
+                tk.Label(l, text=f"{lettre}:", bg=CARTE, fg=TEXTE, font=police(9, True), width=3, anchor="w").pack(side="left")
+                texte = tk.Label(l, text="", bg=CARTE, fg=GRIS, font=police(9), width=17, anchor="e")
+                texte.pack(side="right")
+                barre = Jauge(l, CYAN, epaisseur=5)
+                barre.pack(side="left", fill="x", expand=True, padx=(2, 8))
+                self.lignes_disques[lettre] = (barre, texte)
+            barre, texte = self.lignes_disques[lettre]
+            rempli = 1 - libre / total if total else 0
+            temp = temps.get(lettre)
+            couleur = ROUGE if rempli > 0.97 or (temp or 0) >= 70 else (ORANGE if rempli >= seuil or (temp or 0) >= 60 else CYAN)
+            a_surveiller += couleur != CYAN
+            texte.config(text=f"{libre / 1e9:,.0f} Go libres".replace(",", " ") + (f" · {temp:.0f}°" if temp else ""))
+            barre.regler(rempli, couleur)
+            if rempli >= seuil:
+                self.tache(f"disque {lettre}", "attention", f"Disque {lettre}: presque plein",
+                           f"Il reste {libre / 1e9:.0f} Go sur {total / 1e9:.0f}. Un peu de ménage ?", "Nettoyer",
+                           lambda: self.aller_a("Entretien", "Nettoyer"))
+            else:
+                self.tache_finie(f"disque {lettre}")
+            if (temp or 0) >= 70:
+                self.tache(f"disque chaud {lettre}", "attention", f"Disque {lettre}: très chaud ({temp:.0f} °C)",
+                           "Un SSD qui reste au-dessus de 70 °C s'use plus vite.", "Voir",
+                           lambda: self.aller_a("Santé du PC", "Disques"))
+            else:
+                self.tache_finie(f"disque chaud {lettre}")
+        self.lecteurs = lecteurs
+        if lecteurs and not getattr(self, "sante_disques_connue", False):
+            ok = len(lecteurs) - a_surveiller
+            self.dash_disques.config(text=espacer(f"{ok} / {len(lecteurs)} OK"), fg=VERT if not a_surveiller else ORANGE)
+        self.racine.after(30000, self.maj_disques_dash)
+    self.en_fond(lecteurs_fixes, ensuite)
+
+
+# ---------- le graphique et son historique ----------
+
+@methode
+def charger_historique(self):
+    """self.histo[période] = liste de (heure, cpu, gpu). Les périodes longues sont gardées d'un lancement à l'autre."""
+    self.histo = {nom: deque(maxlen=int(duree / pas) + 5) for nom, (duree, pas) in PERIODES.items()}
+    self.seaux = {}   # pour les périodes longues : on garde le max de chaque tranche de temps
+    garde = charger_json(FICHIER_HISTORIQUE, {})
+    maintenant = time.time()
+    for nom, (duree, _) in PERIODES.items():
+        for point in garde.get(nom, []) if isinstance(garde, dict) else []:
+            if isinstance(point, list) and len(point) == 3 and maintenant - duree < point[0] <= maintenant:
+                self.histo[nom].append(tuple(point))
+
+
+@methode
+def sauver_historique(self):
+    ecrire_json(FICHIER_HISTORIQUE, {nom: [list(p) for p in self.histo[nom]] for nom in ("1 h", "24 h")})
+
+
+@methode
+def sauver_historique_regulierement(self):
+    self.sauver_historique()
+    self.racine.after(5 * 60 * 1000, self.sauver_historique_regulierement)
+
+
+@methode
+def ajouter_historique(self, cpu, gpu):
+    maintenant = time.time()
+    self.histo["10 min"].append((maintenant, cpu, gpu))
+    for nom in ("1 h", "24 h"):
+        pas = PERIODES[nom][1]
+        seau = self.seaux.setdefault(nom, [maintenant, None, None])
+        for i, v in ((1, cpu), (2, gpu)):
+            if v is not None:
+                seau[i] = v if seau[i] is None else max(seau[i], v)
+        if maintenant - seau[0] >= pas:
+            self.histo[nom].append((maintenant, seau[1], seau[2]))
+            self.seaux[nom] = [maintenant, None, None]
+
+
+@methode
+def choisir_periode(self, nom):
+    self.periode = nom
+    for n, b in self.boutons_periode.items():
+        b.config(bg=melanger(CARTE, ACCENT, 0.18) if n == nom else CARTE, fg=ACCENT if n == nom else GRIS)
+    self.dessiner_graphique()
+
+
+@methode
+def dessiner_graphique(self):
+    c = self.graphique
+    c.delete("all")   # on efface et on redessine tout
+    larg, haut = max(c.winfo_width(), 200), max(c.winfo_height(), 120)
+    gauche, droite, bas, mini, maxi = 34, larg - 8, haut - 20, 20, 100
+    duree, pas = PERIODES[self.periode]
+    maintenant = time.time()
+
+    def y(temp):
+        temp = min(max(temp, mini), maxi)
+        return bas - (temp - mini) / (maxi - mini) * (bas - 8)
+
+    def x(instant):
+        return gauche + (instant - (maintenant - duree)) / duree * (droite - gauche)
+
+    for t in (20, 40, 60, 80, 100):   # lignes repères
+        c.create_line(gauche, y(t), droite, y(t), fill="#16162a")
+        c.create_text(gauche - 6, y(t), text=f"{t}°", fill=GRIS, anchor="e", font=police(8))
+    c.create_line(gauche, y(ALERTE_GPU), droite, y(ALERTE_GPU), fill=melanger(CARTE, ORANGE, 0.6), dash=(4, 4))
+    self.legende_alerte.config(text=f"┄ alerte {ALERTE_GPU}°")
+    debut, milieu = {"10 min": ("-10 min", "-5 min"), "1 h": ("-1 h", "-30 min"), "24 h": ("-24 h", "-12 h")}[self.periode]
+    for texte, px, ancre in ((debut, gauche, "w"), (milieu, (gauche + droite) / 2, "center"), ("maintenant", droite, "e")):
+        c.create_text(px, haut - 6, text=texte, fill=GRIS, anchor=ancre, font=police(8))
+    points = [p for p in self.histo[self.periode] if p[0] >= maintenant - duree]
+    for indice, couleur in ((1, CYAN), (2, ROSE)):
+        morceaux, trace, avant = [], [], None
+        for p in points:
+            v = p[indice]
+            if v is None or (avant is not None and p[0] - avant > pas * 4):   # trou dans les mesures : on coupe la ligne
+                morceaux.append(trace)
+                trace = []
+            if v is not None:
+                trace += [x(p[0]), y(v)]
+                avant = p[0]
+        morceaux.append(trace)
+        for pts in morceaux:
+            if len(pts) >= 4:
+                for largeur, force in ((12, 0.06), (8, 0.13), (5, 0.25)):
+                    c.create_line(pts, fill=melanger(CARTE, couleur, force), width=largeur, smooth=True,
+                                  capstyle="round", joinstyle="round", splinesteps=24)
+                c.create_line(pts, fill=couleur, width=2.5, smooth=True, capstyle="round", splinesteps=24)
+        dernier = next((p for p in reversed(points) if p[indice] is not None), None)
+        if dernier and maintenant - dernier[0] < pas * 4:   # un point sur la valeur actuelle
+            px, py = x(dernier[0]), y(dernier[indice])
+            c.create_oval(px - 4, py - 4, px + 4, py + 4, fill=couleur, outline="")
+    if len(points) < 2:
+        c.create_text((gauche + droite) / 2, (bas + 8) / 2, fill=ETEINT, font=police(9),
+                      text="Les courbes se dessinent au fur et à mesure" if self.periode == "10 min"
+                      else f"Pas encore assez de mesures sur {self.periode} : laisse la boîte à outils ouverte")
+
+
+# ---------- musique + micro (toutes les 3 s) ----------
+
+@methode
+def suivre_musique(self):
+    def ensuite(res):
+        if not isinstance(res, Exception):
+            self.titre_musique, self.micro_coupe = res
+            artiste, _, morceau = (self.titre_musique or "").partition(" - ")
+            self.dash_musique.config(text=(morceau or artiste or "Rien en lecture")[:34],
+                                     fg=TEXTE if self.titre_musique else GRIS)
+            self.dash_artiste.config(text=artiste if morceau else "")
+            self.afficher_micro()
+        self.racine.after(3000, self.suivre_musique)
+    self.en_fond(lambda: (musique_en_cours(), micro("etat")), ensuite)
+
+
+@methode
+def afficher_micro(self):
+    self.maj_actions_rapides()
+
+
+@methode
+def basculer_micro(self):
+    import importlib.util
+    try:
+        absent = importlib.util.find_spec("pycaw") is None   # on regarde juste si la librairie est là, sans la charger ici
+    except (ImportError, ValueError):
+        absent = False
+    if absent:
+        if not messagebox.askyesno("Micro", "Pour couper le micro, il faut la librairie pycaw.\n\nL'installer maintenant ?"):
+            return
+        if not installer_paquets("pycaw"):
+            messagebox.showerror("Oups", "Installation ratée. Dans PowerShell :\npython -m pip install pycaw")
+            return
+
+    def ensuite(coupe):
+        if isinstance(coupe, Exception) or coupe is None:
+            self.toast("Micro introuvable : vérifie qu'il est branché (ou choisis-le dans les Réglages)", "attention")
+            return
+        self.micro_coupe = coupe
+        self.afficher_micro()
+        self.toast("Micro coupé" if coupe else "Micro réactivé", "alerte" if coupe else "ok")
+    self.en_fond(lambda: micro("basculer"), ensuite)
+
+
+# =============================================================
+#  🩺 SANTÉ DU PC  -  bilan, refroidissement, disques, mises à jour, diagnostic
+# =============================================================
+
+NOMS_TEMPERATURES = {   # (où, nom donné par LibreHardwareMonitor) -> nom clair. None = on ne l'affiche pas
+    ("Processeur", "core max"): "Cœur le plus chaud du processeur",
+    ("Processeur", "core average"): None,
+    ("Carte graphique", "gpu core"): None,   # déjà affichée (lecture directe)
+    ("Carte graphique", "gpu hot spot"): "Point le plus chaud de la carte graphique",
+    ("Carte graphique", "gpu memory junction"): "Mémoire de la carte graphique",
+    ("Carte mère", "system"): "Intérieur du boîtier (carte mère)",
+    ("Carte mère", "vrm mos"): "Alimentation du processeur (VRM)",
+    ("Carte mère", "pch"): "Puce de la carte mère (chipset)",
+    ("Carte mère", "cpu"): None,
+    ("Carte mère", "cpu socket"): None,
+    ("Carte mère", "pcie x1"): None,
+}
+DOSSIER_PLUGIN = Path(APPDATA) / "Elgato" / "StreamDeck" / "Plugins" / "com.crz.capteurs.sdPlugin"
+
+
+def diagnostic(appli):
+    """Vérifie que chaque morceau de la boîte à outils est bien branché.
+    Renvoie [(niveau, titre, explication), ...]. Tourne en arrière-plan : ne touche pas à l'affichage."""
+    points = []
+    # 1. Capteurs de température
+    if lire_lhm() is not None:
+        points.append(("ok", "Capteurs de température", "LibreHardwareMonitor répond : températures et ventilateurs disponibles."))
+    elif lire_hwinfo() is not None:
+        points.append(("ok", "Capteurs de température", "HWiNFO partage ses mesures (attention : la version gratuite coupe le partage au bout de 12 h)."))
+    else:
+        points.append(("attention", "Capteurs de température",
+                       "Aucun logiciel de capteurs ne répond. Lance LibreHardwareMonitor, puis Options > Remote Web Server > Run."))
+    # 2. Carte graphique
+    if lire_gpu_nvml() is not None:
+        points.append(("ok", "Carte graphique", "Lue directement auprès du pilote NVIDIA (rapide, sans ralentir le PC)."))
+    elif lire_gpu() is not None:
+        points.append(("ok", "Carte graphique", "Lue avec l'outil nvidia-smi (un peu plus lent que la lecture directe)."))
+    else:
+        points.append(("attention", "Carte graphique", "Impossible de lire la carte NVIDIA. Vérifie que son pilote est installé."))
+    # 3. Micro
+    import importlib.util
+    try:
+        pycaw_present = importlib.util.find_spec("pycaw") is not None
+    except (ImportError, ValueError):
+        pycaw_present = True
+    etat = micro("etat") if pycaw_present else None
+    if not pycaw_present:
+        points.append(("attention", "Micro", "La librairie pycaw n'est pas installée. Clique sur le bouton Micro de l'accueil pour l'installer."))
+    elif etat is None:
+        points.append(("attention", "Micro", "Aucun micro trouvé. Branche ton casque, ou choisis le bon micro dans Réglages > Micro."))
+    else:
+        nom = REGLAGES.get("micro_nom") or "micro par défaut de Windows"
+        points.append(("ok", "Micro", f"Branché ({nom}), actuellement {'coupé' if etat else 'ouvert'}."))
+    # 4. Icône près de l'horloge + notifications
+    if appli["icone"]:
+        points.append(("ok", "Icône près de l'horloge", "Active : elle sert aussi à afficher les notifications Windows."))
+    else:
+        points.append(("attention", "Icône près de l'horloge", "Absente (librairies pystray et Pillow) : pas de notifications Windows."))
+    # 5. Serveur local
+    if appli["serveur"]:
+        points.append(("ok", "Liaison téléphone et Stream Deck", f"Le petit serveur écoute sur le port {PORT_SERVEUR}."))
+    else:
+        points.append(("alerte", "Liaison téléphone et Stream Deck",
+                       f"Le port {PORT_SERVEUR} est déjà pris : une autre boîte à outils tourne peut-être déjà."))
+    # 6. Plugin Stream Deck
+    version = None
+    try:
+        version = json.loads((DOSSIER_PLUGIN / "manifest.json").read_text(encoding="utf-8")).get("Version")
+    except (OSError, ValueError):
+        pass
+    if version and time.time() - appli["dernier_appel_local"] < 20:
+        points.append(("ok", "Plugin Stream Deck", f"Installé (v{version}) et connecté : il vient de demander des mesures."))
+    elif version:
+        points.append(("info", "Plugin Stream Deck", f"Installé (v{version}) mais silencieux : le logiciel Stream Deck est peut-être fermé."))
+    else:
+        points.append(("info", "Plugin Stream Deck", "Pas installé. Tu peux l'installer depuis la page Téléphone > Stream Deck."))
+    # 7. Démarrage, mises à jour
+    points.append(("ok", "Lancement au démarrage de Windows", "Activé." ) if LANCEUR_DEMARRAGE.exists() else
+                  ("info", "Lancement au démarrage de Windows", "Désactivé (ça se change dans les Réglages)."))
+    points.append(("ok", "Mises à jour de la boîte à outils", f"Automatiques. Version actuelle : v{VERSION}.") if REGLAGES.get("maj_auto", True) else
+                  ("info", "Mises à jour de la boîte à outils", f"Manuelles. Version actuelle : v{VERSION}."))
+    # 8. Stabilité
+    arrets = [a for a in charger_json(FICHIER_ARRETS, []) if isinstance(a, dict)]
+    limite = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 7 * 86400))
+    recents = [a for a in arrets if str(a.get("vu", "")) >= limite]
+    cette_version = [a for a in recents if a.get("version") == VERSION]
+    if not recents:
+        points.append(("ok", "Stabilité", "Aucun arrêt brutal ces 7 derniers jours."))
+    elif not cette_version:
+        points.append(("ok", "Stabilité", f"{len(recents)} arrêt{' brutal' if len(recents) == 1 else 's brutaux'} cette semaine, mais aucun depuis cette version."))
+    else:
+        points.append(("attention", "Stabilité", f"{len(cette_version)} arrêt{' brutal' if len(cette_version) == 1 else 's brutaux'} avec cette version cette semaine. "
+                                                 "Les détails sont dans plantage.txt (bouton « Ouvrir le dossier »)."))
+    return points
+
+
+@methode
+def page_sante(self, cadre):
+    onglets = self.sous_pages["Santé du PC"] = Onglets(cadre)
+    onglets.pack(fill="both", expand=True)
+    self.etats = {}          # ce qu'on sait de chaque sujet : clé -> (niveau, phrase)
+    self.temps_max = {}      # température max vue depuis le lancement, par capteur
+    self.lignes_ventilos, self.lignes_temps = {}, {}
+
+    # ----- Bilan -----
+    bilan = onglets.ajouter("Bilan")
+    tete = tk.Frame(bilan, bg=CARTE)
+    tete.pack(fill="x", pady=(0, 8))
+    self.titre_bilan = libelle(tete, "Bilan en cours...", 15, TEXTE, True)
+    self.titre_bilan.pack(side="left")
+    Bouton(tete, "🔄 Tout revérifier", self.tout_reverifier).pack(side="right")
+    self.cadre_bilan = tk.Frame(bilan, bg=CARTE)
+    self.cadre_bilan.pack(fill="x")
+    self.lignes_bilan = {}
+    for cle, titre, onglet in (("temperatures", "Températures", "Refroidissement"),
+                               ("ventilos", "Ventilateurs et pompe", "Refroidissement"),
+                               ("disques", "Disques", "Disques"),
+                               ("pilote", "Pilote de la carte graphique", "Mises à jour"),
+                               ("applis", "Applications et autres pilotes", "Mises à jour"),
+                               ("diagnostic", "La boîte à outils elle-même", "Diagnostic")):
+        ligne = tk.Frame(self.cadre_bilan, bg=CARTE)
+        ligne.pack(fill="x", pady=6)
+        point = tk.Label(ligne, text="●", bg=CARTE, fg=GRIS, font=police(15))
+        point.pack(side="left", padx=(0, 12))
+        Bouton(ligne, "Voir  ›", lambda o=onglet: onglets.choisir(o), petit=True).pack(side="right")
+        textes = tk.Frame(ligne, bg=CARTE)
+        textes.pack(side="left", fill="x", expand=True)
+        libelle(textes, titre, 11, TEXTE, True).pack(fill="x")
+        detail = libelle(textes, "Vérification...", 9, GRIS, largeur=640)
+        detail.pack(fill="x")
+        self.lignes_bilan[cle] = (point, detail)
+    self.cadre_autres = tk.Frame(bilan, bg=CARTE)
+    self.cadre_autres.pack(fill="x", pady=(8, 0))
+
+    # ----- Refroidissement -----
+    refroid = onglets.ajouter("Refroidissement", carte=False)
+    refroid.columnconfigure(0, weight=1, uniform="r")
+    refroid.columnconfigure(1, weight=1, uniform="r")
+    refroid.rowconfigure(0, weight=1)
+    carte_v = Carte(refroid, padx=18, pady=14)
+    carte_v.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+    petit_titre(carte_v, "Ventilateurs et pompe").pack(fill="x")
+    self.cadre_ventilos = tk.Frame(carte_v, bg=CARTE)
+    self.cadre_ventilos.pack(fill="x", pady=(6, 0))
+    self.info_ventilos = libelle(carte_v, "", 9, GRIS, largeur=380)
+    self.info_ventilos.pack(fill="x", pady=(8, 0))
+    carte_t = Carte(refroid, padx=18, pady=14)
+    carte_t.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+    petit_titre(carte_t, "Températures").pack(fill="x")
+    self.cadre_temps = tk.Frame(carte_t, bg=CARTE)
+    self.cadre_temps.pack(fill="x", pady=(6, 0))
+    self.info_watts = libelle(carte_t, "", 9, GRIS, largeur=380)
+    self.info_watts.pack(fill="x", pady=(8, 0))
+    aide = Carte(refroid, padx=18, pady=10)
+    aide.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+    libelle(aide, "Comment lire ces chiffres ?", 10, TEXTE, True).pack(fill="x")
+    libelle(aide, "Un ventilateur se mesure en tours par minute (tr/min) : plus ça chauffe, plus il tourne vite. "
+                  "La pompe du watercooling, elle, tourne toujours à fond : c'est normal. Les ventilateurs de la carte "
+                  "graphique s'arrêtent quand elle est froide : c'est normal aussi. Si un ventilateur de la carte mère "
+                  "s'arrête alors qu'il tournait, tu reçois une alerte.", 9, GRIS, largeur=860).pack(fill="x")
+
+    # ----- Disques -----
+    disques = onglets.ajouter("Disques")
+    tete = tk.Frame(disques, bg=CARTE)
+    tete.pack(fill="x")
+    libelle(tete, "Santé des disques", 13, TEXTE, True).pack(side="left")
+    Bouton(tete, "🔄 Revérifier", self.verifier_disques).pack(side="right")
+    libelle(disques, "L'état de santé vient de Windows ; l'usure, la température et les données écrites viennent des capteurs.",
+            9, GRIS, largeur=860).pack(fill="x", pady=(2, 6))
+    self.cadre_disques = tk.Frame(disques, bg=CARTE)
+    self.cadre_disques.pack(fill="x")
+
+    # ----- Mises à jour -----
+    maj = onglets.ajouter("Mises à jour")
+    tete = tk.Frame(maj, bg=CARTE)
+    tete.pack(fill="x")
+    libelle(tete, "Pilote de la carte graphique", 12, TEXTE, True).pack(side="left")
+    self.lien_pilote = PAGE_PILOTES_NVIDIA
+    self.btn_pilote = Bouton(tete, "⬇ Télécharger", lambda: os.startfile(self.lien_pilote), "succes", petit=True)
+    self.info_pilote = libelle(maj, "Vérification...", 10, GRIS)
+    self.info_pilote.pack(fill="x", pady=(2, 10))
+
+    tete = tk.Frame(maj, bg=CARTE)
+    tete.pack(fill="x")
+    libelle(tete, "Applications", 12, TEXTE, True).pack(side="left")
+    self.btn_maj = Bouton(tete, "⬆ Mettre à jour la sélection", self.lancer_maj, "succes", petit=True)
+    self.btn_maj.pack(side="right")
+    self.btn_maj.activer(False)
+    Bouton(tete, "🔍 Vérifier", lambda: (self.verifier_maj(), self.verifier_pilotes()), petit=True).pack(side="right", padx=8)
+    self.info_maj = libelle(maj, "", 9, GRIS, largeur=860)
+    self.info_maj.pack(fill="x", pady=(2, 4))
+    self.liste_maj = tk.Listbox(maj, height=6, bg=CHAMP, fg=TEXTE, selectbackground=melanger(CHAMP, ACCENT, 0.3),
+                                selectforeground="white", relief="flat", highlightthickness=1, highlightbackground=BORD,
+                                font=police(10), activestyle="none", selectmode="extended", exportselection=False)
+    self.liste_maj.pack(fill="x")
+
+    tete = tk.Frame(maj, bg=CARTE)
+    tete.pack(fill="x", pady=(12, 0))
+    libelle(tete, "Autres pilotes et carte mère", 12, TEXTE, True).pack(side="left")
+    Bouton(tete, "🌐 Page MSI", lambda: os.startfile(PAGE_MSI), petit=True).pack(side="right")
+    Bouton(tete, "🪟 Windows Update", lambda: os.startfile("ms-settings:windowsupdate-optionalupdates"), petit=True).pack(side="right", padx=8)
+    self.info_pilotes = libelle(maj, "Autres pilotes : vérification via Windows Update...", 10, GRIS, largeur=860)
+    self.info_pilotes.pack(fill="x", pady=(2, 0))
+    bios = version_bios()
+    libelle(maj, (f"Carte mère MSI PRO B760-P : BIOS {bios[0]} du {bios[1]}. " if bios else "Carte mère MSI PRO B760-P. ") +
+            "Compare avec la page MSI ; une mise à jour du BIOS n'est utile que si elle corrige un souci que tu as.",
+            10, GRIS, largeur=860).pack(fill="x", pady=(4, 0))
+    self.applis_maj = []
+
+    # ----- Diagnostic -----
+    diag = onglets.ajouter("Diagnostic")
+    tete = tk.Frame(diag, bg=CARTE)
+    tete.pack(fill="x")
+    libelle(tete, "Tout est-il bien branché ?", 13, TEXTE, True).pack(side="left")
+    Bouton(tete, "🔄 Revérifier", self.lancer_diagnostic, petit=True).pack(side="right")
+    Bouton(tete, "📋 Copier le rapport", self.copier_diagnostic, petit=True).pack(side="right", padx=8)
+    Bouton(tete, "📁 Ouvrir le dossier", self.ouvrir_dossier_appli, petit=True).pack(side="right")
+    libelle(diag, "La boîte à outils s'appuie sur plusieurs morceaux. Ici tu vois d'un coup d'œil lequel manque, et quoi faire.",
+            9, GRIS, largeur=860).pack(fill="x", pady=(2, 6))
+    self.cadre_diagnostic = tk.Frame(diag, bg=CARTE)
+    self.cadre_diagnostic.pack(fill="x")
+    self.points_diagnostic = []
+    onglets.quand_change = lambda nom: nom == "Diagnostic" and self.lancer_diagnostic()
+
+    self.racine.after(3000, self.verifier_maj)
+    self.racine.after(4000, self.verifier_disques)
+    self.racine.after(5000, self.verifier_pilotes)
+    self.racine.after(9000, self.lancer_diagnostic)
+    self.dessiner_bilan()
+
+
+@methode
+def tout_reverifier(self):
+    self.verifier_maj()
+    self.verifier_pilotes()
+    self.verifier_disques()
+    self.lancer_diagnostic()
+    self.toast("Vérification relancée : le bilan se met à jour dans quelques secondes", "info")
+
+
+@methode
+def dessiner_bilan(self):
+    """Met à jour les 6 lignes du bilan à partir de ce qu'on sait (self.etats + les dernières mesures)."""
+    if not hasattr(self, "lignes_bilan"):
+        return
+    m = getattr(self, "dernieres_mesures", None) or {}
+    etats = dict(self.etats)
+    # Températures
+    cpu, gpu = m.get("cpu_temp"), (m.get("gpu") or [None])[0]
+    if cpu is None and gpu is None:
+        etats["temperatures"] = ("inconnu", "Pas encore de mesure.")
+    else:
+        mots, pire = [], "ok"
+        for nom, valeur, alerte in (("processeur", cpu, ALERTE_CPU), ("carte graphique", gpu, ALERTE_GPU)):
+            if valeur is not None:
+                etat, couleur = self.etat_temperature(valeur, alerte)
+                mots.append(f"{nom} {valeur:.0f} °C ({etat.lower()})")
+                if couleur == ROUGE:
+                    pire = "alerte"
+        phrase = ", ".join(mots)
+        etats["temperatures"] = (pire, phrase[:1].upper() + phrase[1:] + ".")
+    # Ventilateurs
+    ventilos = [v for v in m.get("ventilos", []) if self.ventilos_vus.get(f"{v['ou']} / {v['nom']}", 0) > 0] if hasattr(self, "ventilos_vus") else []
+    arretes = [t for cle, t in self.taches.items() if cle.startswith("ventilo ")]
+    if arretes:
+        etats["ventilos"] = ("alerte", arretes[0]["texte"] + ". " + arretes[0]["detail"])
+    elif ventilos:
+        pompe = next((v for v in ventilos if v["nom"].lower().startswith("pump")), None)
+        tournent = sum(1 for v in ventilos if v["rpm"] > 0)
+        etats["ventilos"] = ("ok", pluriel(f"{tournent} ventilateur(s) en marche sur {len(ventilos)}", tournent) +
+                             (", pompe à " + f"{pompe['rpm']:,.0f}".replace(",", " ") + " tr/min" if pompe else "") + ".")
+    else:
+        etats["ventilos"] = ("inconnu", "Pas de mesure : il faut LibreHardwareMonitor pour voir les ventilateurs.")
+    # Applications + autres pilotes : on réunit les deux
+    a, p = etats.pop("applis_seules", None), etats.pop("pilotes_wu", None)
+    if a or p:
+        niveaux = [x[0] for x in (a, p) if x]
+        etats["applis"] = (next((n for n in ("attention", "info", "ok") if n in niveaux), "inconnu"),
+                           " ".join(x[1] for x in (a, p) if x))
+    for cle, (point, detail) in self.lignes_bilan.items():
+        niveau, phrase = etats.get(cle, ("inconnu", "Vérification..."))
+        point.config(fg=COULEUR_NIVEAU.get(niveau, GRIS))
+        detail.config(text=phrase)
+    total = len(self.taches)   # le même nombre que dans le menu et sur l'accueil
+    niveaux = {t["niveau"] for t in self.taches.values()}
+    if total == 0:
+        self.titre_bilan.config(text="✓  Ton PC est en forme", fg=VERT)
+    elif niveaux <= {"info"}:   # que des petites choses (une appli à mettre à jour...)
+        self.titre_bilan.config(text=pluriel(f"✓  Ton PC est en forme · {total} petite(s) chose(s) à faire, rien d'urgent", total), fg=CYAN)
+    else:
+        self.titre_bilan.config(text=pluriel(f"{total} point(s) à regarder", total), fg=ROUGE if "alerte" in niveaux else ORANGE)
+    # Les autres points « À faire » qui ne rentrent dans aucune ligne
+    vider(self.cadre_autres)
+    autres = [t for cle, t in self.taches.items()
+              if not cle.startswith(("ventilo ", "cpu_chaud", "gpu_chaud", "pilote", "applis", "pilotes_wu", "sante_disque"))]
+    if autres:
+        petit_titre(self.cadre_autres, "Aussi à noter").pack(fill="x", pady=(6, 0))
+    for t in sorted(autres, key=lambda t: ORDRE_NIVEAUX.get(t["niveau"], 9)):
+        ligne_etat(self.cadre_autres, t["niveau"], t["texte"], t["detail"], t["bouton"] if t["action"] else None, t["action"])
+
+
+@methode
+def dessiner_refroidissement(self):
+    """Met à jour les ventilateurs et les températures (appelée toutes les 2 s quand la page Santé est ouverte)."""
+    m = getattr(self, "dernieres_mesures", None) or {}
+    self.dessiner_bilan()
+    # --- Ventilateurs ---
+    caches = 0
+    for v in m.get("ventilos", []):
+        cle = f"{v['ou']} / {v['nom']}"
+        if self.ventilos_vus.get(cle, 0) <= 0 and v["ou"] == "Carte mère":
+            caches += 1   # prise vide sur la carte mère : rien n'est branché dessus
+            continue
+        if cle not in self.lignes_ventilos:
+            ligne = tk.Frame(self.cadre_ventilos, bg=CARTE)
+            ligne.pack(fill="x", pady=5)
+            haut = tk.Frame(ligne, bg=CARTE)
+            haut.pack(fill="x")
+            libelle(haut, nom_ventilo(v["nom"]), 10, TEXTE, True).pack(side="left")
+            etat = tk.Label(haut, text="", bg=CARTE, fg=VERT, font=police(8, True))
+            etat.pack(side="right")
+            vitesse = tk.Label(haut, text="", bg=CARTE, fg=TEXTE, font=police(10))
+            vitesse.pack(side="right", padx=(0, 12))
+            jauge = Jauge(ligne, CYAN, epaisseur=5)
+            jauge.pack(fill="x", pady=(2, 0))
+            self.lignes_ventilos[cle] = (vitesse, etat, jauge)
+        vitesse, etat, jauge = self.lignes_ventilos[cle]
+        maxi = max(self.ventilos_vus.get(cle, 0), 1)
+        vitesse.config(text=f"{v['rpm']:,.0f} tr/min".replace(",", " "))
+        fraction = (v["pct"] / 100) if v.get("pct") is not None else v["rpm"] / maxi
+        if ("ventilo " + cle) in self.taches:
+            etat.config(text=espacer("arrêté"), fg=ROUGE)
+            jauge.regler(0.02, ROUGE)
+        elif v["rpm"] <= 0:
+            etat.config(text=espacer("au repos"), fg=GRIS)
+            jauge.regler(0, GRIS)
+        else:
+            etat.config(text=espacer(f"{v['pct']:.0f} %" if v.get("pct") is not None else "tourne"), fg=VERT)
+            jauge.regler(fraction, ROSE if v["ou"] == "Carte graphique" else CYAN)
+    if not m.get("ventilos"):
+        self.info_ventilos.config(text="Aucun ventilateur visible. Pour les voir, lance LibreHardwareMonitor "
+                                       "(Options > Remote Web Server > Run). Détails dans l'onglet Diagnostic.")
+    elif caches:
+        self.info_ventilos.config(text=pluriel(f"{caches} prise(s) de ventilateur", caches) + " de la carte mère sans rien de branché (non affichées). "
+                                       "Les ventilateurs reliés à un boîtier de contrôle séparé n'apparaissent pas ici.")
+    else:
+        self.info_ventilos.config(text="")
+    # --- Températures ---
+    liste = []
+    if m.get("cpu_temp") is not None:
+        liste.append(("Processeur", m["cpu_temp"], ALERTE_CPU))
+    if m.get("gpu"):
+        liste.append(("Carte graphique", m["gpu"][0], ALERTE_GPU))
+    barrettes = [v for ou, nom, v in m.get("temps", []) if ou == "Mémoire"]
+    for ou, nom, valeur in m.get("temps", []):
+        propre = NOMS_TEMPERATURES.get((ou, nom.lower()), "?")
+        if propre == "?" and ou == "Carte mère" and nom.lower().startswith("m2"):
+            propre = "Emplacement SSD " + nom.replace("M2", "M.2")
+        if propre and propre != "?":
+            liste.append((propre, valeur, 95 if "Point le plus chaud" in propre else 90))
+    if barrettes:
+        liste.append(("Mémoire (barrette la plus chaude)", max(barrettes), 70))
+    for nom, valeur, alerte in liste:
+        if nom not in self.lignes_temps:
+            ligne = tk.Frame(self.cadre_temps, bg=CARTE)
+            ligne.pack(fill="x", pady=4)
+            haut = tk.Frame(ligne, bg=CARTE)
+            haut.pack(fill="x")
+            libelle(haut, nom, 10, TEXTE, nom in ("Processeur", "Carte graphique")).pack(side="left")
+            maxi = tk.Label(haut, text="", bg=CARTE, fg=ETEINT, font=police(8))
+            maxi.pack(side="right")
+            texte = tk.Label(haut, text="", bg=CARTE, fg=TEXTE, font=police(10, True))
+            texte.pack(side="right", padx=(0, 10))
+            jauge = Jauge(ligne, VERT, epaisseur=5)
+            jauge.pack(fill="x", pady=(2, 0))
+            self.lignes_temps[nom] = (texte, maxi, jauge)
+        texte, maxi, jauge = self.lignes_temps[nom]
+        self.temps_max[nom] = max(self.temps_max.get(nom, 0), valeur)
+        couleur = self.etat_temperature(valeur, alerte)[1]
+        texte.config(text=f"{valeur:.0f} °C", fg=couleur if couleur != VERT else TEXTE)
+        maxi.config(text=f"max {self.temps_max[nom]:.0f}°")
+        jauge.regler(valeur / 100, couleur)
+    watts = m.get("watts", {})
+    morceaux = [f"{nom.lower()} {valeur:.0f} W" for nom, valeur in watts.items()]
+    if not watts and m.get("gpu"):
+        morceaux = [f"carte graphique {m['gpu'][3]:.0f} W"]
+    self.info_watts.config(text=("Consommation en ce moment : " + ", ".join(morceaux) + ".") if morceaux else "")
+
+
+# ---------- mises à jour (pilote NVIDIA, applis, Windows Update) ----------
+
+@methode
+def verifier_maj(self):
+    self.info_maj.config(text="Je demande à Windows quelles applis ont une mise à jour (ça peut prendre 30 s)...", fg=GRIS)
+
+    def travail():
+        installe = version_pilote_nvidia()
+        try:
+            dernier, lien = dernier_pilote_nvidia()
+        except Exception:
+            dernier, lien = None, PAGE_PILOTES_NVIDIA
+        try:
+            applis = applis_a_mettre_a_jour()
+        except (OSError, subprocess.TimeoutExpired):
+            applis = None
+        return installe, dernier, lien, applis
+
+    def ensuite(res):
+        if isinstance(res, Exception):
+            self.info_maj.config(text=f"Erreur : {res}", fg=ROUGE)
+            return
+        installe, dernier, self.lien_pilote, applis = res
+        voir = lambda: self.aller_a("Santé du PC", "Mises à jour")
+        self.btn_pilote.pack_forget()
+        if installe and dernier:
+            try:
+                a_jour = float(installe) >= float(dernier)
+            except ValueError:
+                a_jour = installe == dernier
+            if a_jour:
+                self.info_pilote.config(text=f"✓ À jour (version {installe}).", fg=VERT)
+                self.etats["pilote"] = ("ok", f"À jour (version {installe}).")
+                self.tache_finie("pilote")
+            else:
+                self.info_pilote.config(text=f"Nouvelle version {dernier} disponible (tu as la {installe}). Télécharge-la, "
+                                             "lance l'installation et choisis « Installation express ».", fg=ORANGE)
+                self.btn_pilote.changer("⬇ Télécharger", "succes")
+                self.btn_pilote.pack(side="right")
+                self.etats["pilote"] = ("attention", f"Nouvelle version {dernier} disponible (tu as la {installe}).")
+                self.tache("pilote", "attention", f"Nouveau pilote graphique ({dernier})",
+                           "Les nouveaux pilotes améliorent souvent les jeux récents.", "Voir", voir)
+        else:
+            self.info_pilote.config(text=f"Version installée : {installe or 'inconnue'}. Impossible de comparer en ligne pour l'instant.", fg=GRIS)
+            self.btn_pilote.changer("🌐 Page des pilotes", "discret")
+            self.btn_pilote.pack(side="right")
+            self.etats["pilote"] = ("inconnu", f"Version installée : {installe or 'inconnue'} (comparaison en ligne impossible).")
+        self.liste_maj.delete(0, "end")
+        if applis is None:
+            self.info_maj.config(text="winget introuvable : il s'installe avec « Programme d'installation d'application » "
+                                      "dans le Microsoft Store.", fg=GRIS)
+            self.etats["applis_seules"] = ("inconnu", "Applications : winget introuvable.")
+        else:
+            self.applis_maj = applis
+            for a in applis:
+                self.liste_maj.insert("end", f"  {a['nom']}   {a['version']} → {a['dispo']}")
+            if applis:
+                self.info_maj.config(text=pluriel(f"{len(applis)} appli(s) à mettre à jour. ", len(applis)) + "Clique pour sélectionner "
+                                          "(Ctrl+clic pour plusieurs), puis « Mettre à jour la sélection ».", fg=TEXTE)
+                self.btn_maj.activer(True)
+                self.etats["applis_seules"] = ("info", pluriel(f"{len(applis)} appli(s) à mettre à jour.", len(applis)))
+                self.tache("applis", "info", pluriel(f"{len(applis)} appli(s) à mettre à jour", len(applis)),
+                           ", ".join(a["nom"] for a in applis[:4]) + ("..." if len(applis) > 4 else ""), "Voir", voir)
+            else:
+                self.info_maj.config(text="✓ Toutes tes applis sont à jour.", fg=VERT)
+                self.btn_maj.activer(False)
+                self.etats["applis_seules"] = ("ok", "Applications à jour.")
+                self.tache_finie("applis")
+        self.sous_pages["Santé du PC"].pastille("Mises à jour", str(len(applis)) if applis else "")
+        self.dessiner_bilan()
+    self.en_fond(travail, ensuite)
+
+
+@methode
+def lancer_maj(self):
+    choisies = [self.applis_maj[i] for i in self.liste_maj.curselection()]
+    if not choisies:
+        self.info_maj.config(text="Sélectionne d'abord une ou plusieurs applis dans la liste 👇", fg=ORANGE)
+        return
+    noms = ", ".join(a["nom"] for a in choisies)
+    if not messagebox.askyesno("Mises à jour", f"Mettre à jour : {noms} ?\n\n"
+                                               "Certaines applis demanderont l'accès admin, et il vaut mieux "
+                                               "les fermer avant."):
+        return
+    self.btn_maj.activer(False)
+    self.info_maj.config(text=f"Mise à jour en cours : {noms}... (laisse tourner)", fg=TEXTE)
+
+    def travail():
+        return [(a["nom"], mettre_a_jour(a["id"])) for a in choisies]
+
+    def ensuite(res):
+        if isinstance(res, Exception):
+            self.info_maj.config(text=f"Erreur : {res}", fg=ROUGE)
+            return
+        ok = [n for n, r in res if r]
+        self.noter("maj", len(ok), "somme")
+        rate = [n for n, r in res if not r]
+        texte = (f"✓ À jour : {', '.join(ok)}. " if ok else "") + (f"Raté : {', '.join(rate)}." if rate else "")
+        self.verifier_maj()
+        self.racine.after(200, lambda: self.info_maj.config(text=texte, fg=VERT if not rate else ORANGE))
+    self.en_fond(travail, ensuite)
+
+
+@methode
+def verifier_pilotes(self):
+    def ensuite(pilotes):
+        if isinstance(pilotes, Exception):
+            self.info_pilotes.config(text=f"Autres pilotes : impossible de demander à Windows Update ({pilotes}).", fg=GRIS)
+            self.etats["pilotes_wu"] = ("inconnu", "Autres pilotes : Windows Update ne répond pas.")
+        elif pilotes:
+            liste = "\n".join("   • " + p[:90] for p in pilotes[:6])
+            self.info_pilotes.config(text=pluriel(f"{len(pilotes)} pilote(s) proposé(s)", len(pilotes)) + " par Windows Update "
+                                          f"(dans « Mises à jour facultatives ») :\n{liste}", fg=ORANGE)
+            self.etats["pilotes_wu"] = ("info", pluriel(f"{len(pilotes)} pilote(s) proposé(s) par Windows Update.", len(pilotes)))
+            self.tache("pilotes_wu", "info", pluriel(f"{len(pilotes)} pilote(s) dans Windows Update", len(pilotes)), "Ils sont dans les mises à jour facultatives.",
+                       "Voir", lambda: self.aller_a("Santé du PC", "Mises à jour"))
+        else:
+            self.info_pilotes.config(text="✓ Autres pilotes : rien de nouveau dans Windows Update.", fg=VERT)
+            self.etats["pilotes_wu"] = ("ok", "Autres pilotes à jour.")
+            self.tache_finie("pilotes_wu")
+        self.dessiner_bilan()
+    self.en_fond(pilotes_windows_update, ensuite)
+
+
+# ---------- disques ----------
+
+@methode
+def verifier_disques(self):
+    vider(self.cadre_disques)
+    libelle(self.cadre_disques, "Analyse...", 10, GRIS).pack(anchor="w")
+
+    def puce(parent, texte, couleur):
+        tk.Label(parent, text=texte, bg=melanger(SURFACE, couleur, 0.14), fg=couleur, font=police(9, True),
+                 padx=8, pady=2).pack(side="left", padx=(0, 6))
+
+    def ensuite(disques):
+        vider(self.cadre_disques)
+        if isinstance(disques, Exception) or not disques:
+            libelle(self.cadre_disques, "Impossible de lire les disques (Windows n'a pas répondu).", 10, GRIS).pack(anchor="w")
+            self.etats["disques"] = ("inconnu", "Impossible de lire l'état des disques.")
+            self.dessiner_bilan()
+            return
+        nb_ok, soucis = 0, []
+        for d in disques:
+            probleme = d["panne"] or d["sante"] not in ("Healthy", None) or (d["vie"] is not None and d["vie"] < 20)
+            fatigue = d["vie"] is not None and d["vie"] < 50
+            couleur = ROUGE if probleme else (ORANGE if fatigue else VERT)
+            nb_ok += not probleme
+            bloc = tk.Frame(self.cadre_disques, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, padx=12, pady=8)
+            bloc.pack(fill="x", pady=4)
+            haut = tk.Frame(bloc, bg=SURFACE)
+            haut.pack(fill="x")
+            tk.Label(haut, text="●", bg=SURFACE, fg=couleur, font=police(12)).pack(side="left", padx=(0, 8))
+            libelle(haut, d["nom"], 11, TEXTE, True, SURFACE).pack(side="left")
+            libelle(haut, f"   {d['type']} · {d['taille'] / 1e9:.0f} Go", 9, GRIS, fond=SURFACE).pack(side="left")
+            puces = tk.Frame(bloc, bg=SURFACE)
+            puces.pack(fill="x", pady=(6, 0))
+            if probleme:
+                puce(puces, "PROBLÈME : sauvegarde tes fichiers", ROUGE)
+                soucis.append(d["nom"])
+                self.tache("sante_disque " + d["nom"], "alerte", f"Disque {d['nom']} en mauvais état",
+                           "Sauvegarde ce qui compte dessus dès que possible.", "Voir",
+                           lambda: self.aller_a("Santé du PC", "Disques"))
+            else:
+                puce(puces, "Bon état", VERT)
+                self.tache_finie("sante_disque " + d["nom"])
+            if d["vie"] is not None:
+                puce(puces, f"Vie restante {d['vie']:.0f} %", couleur if fatigue or probleme else CYAN)
+            if d["temp"] is not None:
+                puce(puces, f"{d['temp']:.0f} °C", ROUGE if d["temp"] >= 70 else (ORANGE if d["temp"] >= 60 else CYAN))
+            if d["ecrit"]:
+                valeur, unite = d["ecrit"]
+                puce(puces, f"{valeur:,.0f} {unite} écrits".replace(",", " "), GRIS)
+        self.sante_disques_connue = True
+        self.dash_disques.config(text=espacer(f"{nb_ok} / {len(disques)} OK"), fg=VERT if nb_ok == len(disques) else ROUGE)
+        if soucis:
+            self.etats["disques"] = ("alerte", f"Problème sur : {', '.join(soucis)}. Sauvegarde tes fichiers.")
+        else:
+            pleins = [cle.split()[-1] for cle in self.taches if cle.startswith("disque ") and not cle.startswith("disque chaud")]
+            self.etats["disques"] = (("attention", f"Disques en bon état, mais {', '.join(l + ':' for l in pleins)} presque plein.")
+                                     if pleins else ("ok", pluriel(f"{len(disques)} disque(s) en bon état.", len(disques))))
+        if not any(d["vie"] is not None for d in disques):
+            libelle(self.cadre_disques, "Pour voir l'usure et la température des SSD, lance LibreHardwareMonitor.", 9, GRIS).pack(fill="x", pady=(4, 0))
+        # La place sur chaque lecteur
+        lecteurs = getattr(self, "lecteurs", [])
+        if lecteurs:
+            petit_titre(self.cadre_disques, "Place sur chaque lecteur").pack(fill="x", pady=(12, 2))
+        for lettre, total, libre in lecteurs:
+            ligne = tk.Frame(self.cadre_disques, bg=CARTE)
+            ligne.pack(fill="x", pady=2)
+            libelle(ligne, f"{lettre}:", 10, TEXTE, True, width=3).pack(side="left")
+            libelle(ligne, f"{libre / 1e9:,.0f} Go libres sur {total / 1e9:,.0f}".replace(",", " "), 9, GRIS, width=26).pack(side="right")
+            rempli = 1 - libre / total if total else 0
+            j = Jauge(ligne, CYAN, epaisseur=6)
+            j.pack(side="left", fill="x", expand=True, padx=8)
+            j.regler(rempli, ROUGE if rempli > 0.97 else (ORANGE if rempli >= int(REGLAGES.get("alerte_disque", 90)) / 100 else CYAN))
+        self.dessiner_bilan()
+    self.en_fond(etat_disques, ensuite)
+
+
+# ---------- diagnostic ----------
+
+@methode
+def lancer_diagnostic(self):
+    infos = {"icone": self.icone is not None, "serveur": getattr(self, "serveur", None) is not None,
+             "dernier_appel_local": getattr(self, "dernier_appel_local", 0)}
+
+    def ensuite(points):
+        if isinstance(points, Exception):
+            points = [("attention", "Diagnostic impossible", str(points))]
+        self.points_diagnostic = points
+        vider(self.cadre_diagnostic)
+        for niveau, titre, detail in points:
+            ligne_etat(self.cadre_diagnostic, niveau, titre, detail)
+        soucis = [p for p in points if p[0] in ("alerte", "attention")]
+        if soucis:
+            noms = ", ".join(p[1].lower() for p in soucis)
+            self.etats["diagnostic"] = ("attention", pluriel(f"{len(soucis)} point(s) à voir : {noms}.", len(soucis)))
+            self.tache("diagnostic", "attention", "Un élément de la boîte à outils n'est pas branché", noms.capitalize() + ".",
+                       "Diagnostic", lambda: self.aller_a("Santé du PC", "Diagnostic"), prevenir=False)
+        else:
+            self.etats["diagnostic"] = ("ok", "Capteurs, micro, liaison téléphone et Stream Deck : tout est branché.")
+            self.tache_finie("diagnostic")
+        self.dessiner_bilan()
+    self.en_fond(lambda: diagnostic(infos), ensuite)
+
+
+@methode
+def copier_diagnostic(self):
+    lignes = [f"Boîte à outils v{VERSION} · Python {sys.version.split()[0]} · {time.strftime('%Y-%m-%d %H:%M')}",
+              f"Fichier : {Path(__file__).resolve()}"]
+    symboles = {"ok": "[OK]", "attention": "[!]", "alerte": "[!!]", "info": "[i]"}
+    lignes += [f"{symboles.get(n, '[?]')} {titre} : {detail}" for n, titre, detail in self.points_diagnostic]
+    self.racine.clipboard_clear()
+    self.racine.clipboard_append("\n".join(lignes))
+    self.toast("Rapport copié : tu peux le coller où tu veux (Ctrl+V)")
+
+
+# =============================================================
+#  🎮 JEUX  -  lancer une partie, temps de jeu, résumé des sessions
+# =============================================================
+
+def quand_lisible(instant):
+    """« aujourd'hui 21:04 », « hier 18:30 », « 12 nov. 20:15 »."""
+    t, maintenant = time.localtime(instant), time.localtime()
+    heure = f"{t.tm_hour:02d}:{t.tm_min:02d}"
+    if (t.tm_year, t.tm_yday) == (maintenant.tm_year, maintenant.tm_yday):
+        return f"aujourd'hui {heure}"
+    hier = time.localtime(time.time() - 86400)
+    if (t.tm_year, t.tm_yday) == (hier.tm_year, hier.tm_yday):
+        return f"hier {heure}"
+    return f"{t.tm_mday} {MOIS[t.tm_mon - 1]} {heure}"
+
+
+@methode
+def page_jeux(self, cadre):
+    onglets = self.sous_pages["Jeux"] = Onglets(cadre)
+    onglets.pack(fill="both", expand=True)
+    self.temps = charger_temps()
+    self.sessions = charger_json(FICHIER_SESSIONS, [])
+    if not isinstance(self.sessions, list):
+        self.sessions = []
+    self.jeux = {}
+    self.partie = None   # la partie en cours : {"jeu", "debut", "cpu_max", "gpu_max"}
+    self.jeu_actuel, self.debut_jeu, self.dernier_releve = None, None, time.time()
+
+    # ----- Jouer -----
+    jouer = onglets.ajouter("Jouer", carte=False)
+    jouer.columnconfigure(0, weight=1)
+    jouer.rowconfigure(0, weight=1)
+    liste = Carte(jouer, padx=16, pady=14)
+    liste.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+    tete = tk.Frame(liste, bg=CARTE)
+    tete.pack(fill="x", pady=(0, 6))
+    libelle(tete, "Tes jeux", 13, TEXTE, True).pack(side="left")
+    Bouton(tete, "🔄 Actualiser", self.charger_jeux, petit=True).pack(side="right")
+    self.liste_jeux = ttk.Treeview(liste, columns=("jeu", "temps", "quand"), show="headings", height=12, selectmode="browse")
+    for col, titre, larg, ancre in (("jeu", "Jeu", 250, "w"), ("temps", "Temps de jeu", 110, "e"), ("quand", "Dernière partie", 130, "e")):
+        self.liste_jeux.heading(col, text=titre, anchor=ancre)
+        self.liste_jeux.column(col, width=larg, anchor=ancre)
+    self.liste_jeux.pack(fill="both", expand=True)
+    self.liste_jeux.bind("<Double-1>", lambda e: self.lancer())
+    self.info_liste_jeux = libelle(liste, "", 9, GRIS)
+    self.info_liste_jeux.pack(fill="x", pady=(6, 0))
+
+    session = Carte(jouer, padx=16, pady=14)
+    session.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+    session.exterieur.config(width=320)
+    session.exterieur.grid_propagate(False)
+    session.exterieur.pack_propagate(False)
+    libelle(session, "Session gaming", 13, TEXTE, True).pack(fill="x")
+    libelle(session, "Choisis un jeu à gauche, puis lance la session. Voilà ce qui se passe :", 9, GRIS, largeur=280).pack(fill="x", pady=(2, 8))
+    self.cadre_etapes = tk.Frame(session, bg=CARTE)
+    self.cadre_etapes.pack(fill="x")
+    self.btn_lancer = Bouton(session, "🚀 Lancer la session", self.lancer, "succes")
+    self.btn_lancer.pack(fill="x", pady=(12, 4))
+    self.btn_fini = Bouton(session, "✅ J'ai fini de jouer", self.fin_session)
+    self.btn_fini.pack(fill="x")
+    self.btn_fini.activer(False)
+    self.info_gaming = libelle(session, "", 9, GRIS, largeur=280)
+    self.info_gaming.pack(fill="x", pady=(10, 0))
+    self.dessiner_etapes()
+
+    # ----- Temps de jeu -----
+    temps = onglets.ajouter("Temps de jeu")
+    self.info_jeu_actuel = libelle(temps, "", 12, GRIS, True)
+    self.info_jeu_actuel.pack(fill="x")
+    self.info_totaux = libelle(temps, "", 10, TEXTE)
+    self.info_totaux.pack(fill="x", pady=(2, 8))
+    petit_titre(temps, "Par jeu, sur les 7 derniers jours").pack(fill="x")
+    self.graph_jeux = tk.Canvas(temps, bg=CARTE, height=170, highlightthickness=0)
+    self.graph_jeux.pack(fill="x", pady=(4, 10))
+    petit_titre(temps, "Par jour").pack(fill="x")
+    self.graph_jours = tk.Canvas(temps, bg=CARTE, height=130, highlightthickness=0)
+    self.graph_jours.pack(fill="x", pady=4)
+    libelle(temps, "Le temps est compté tant que la boîte à outils tourne (même rangée près de l'horloge).", 9, GRIS).pack(fill="x", pady=(6, 0))
+    self.graph_jeux.bind("<Configure>", lambda e: self.afficher_temps())
+    self.graph_jours.bind("<Configure>", lambda e: self.afficher_temps())
+
+    # ----- Sessions -----
+    sessions = onglets.ajouter("Sessions")
+    libelle(sessions, "Tes dernières parties", 13, TEXTE, True).pack(fill="x")
+    libelle(sessions, "À la fin de chaque partie, la boîte à outils note sa durée et les températures les plus hautes atteintes. "
+                      "Pratique pour repérer un jeu qui fait trop chauffer le PC.", 9, GRIS, largeur=860).pack(fill="x", pady=(2, 8))
+    self.liste_sessions = ttk.Treeview(sessions, columns=("jeu", "quand", "duree", "cpu", "gpu"), show="headings", height=14, selectmode="none")
+    for col, titre, larg, ancre in (("jeu", "Jeu", 260, "w"), ("quand", "Quand", 160, "w"), ("duree", "Durée", 100, "e"),
+                                    ("cpu", "Processeur max", 130, "e"), ("gpu", "Carte graphique max", 150, "e")):
+        self.liste_sessions.heading(col, text=titre, anchor=ancre)
+        self.liste_sessions.column(col, width=larg, anchor=ancre)
+    self.liste_sessions.pack(fill="both", expand=True)
+    self.info_sessions = libelle(sessions, "", 9, GRIS)
+    self.info_sessions.pack(fill="x", pady=(6, 0))
+    self.afficher_sessions()
+    self.charger_jeux()
+    self.racine.after(1500, self.suivre_jeu)
+
+
+@methode
+def dessiner_etapes(self):
+    """La liste « voilà ce qui se passe » de la session gaming, d'après tes réglages."""
+    vider(self.cadre_etapes)
+    etapes = []
+    if APPS_A_FERMER:
+        etapes.append("Ferme " + ", ".join(a.replace(".exe", "") for a in APPS_A_FERMER))
+    if REGLAGES["mode_performances"]:
+        etapes.append("Passe Windows en mode Performances")
+    etapes += ["Ouvre Discord", "Lance le jeu avec Steam", "À la fin : remet tout comme avant"]
+    for texte in etapes:
+        ligne = tk.Frame(self.cadre_etapes, bg=CARTE)
+        ligne.pack(fill="x", pady=2)
+        tk.Label(ligne, text="✓", bg=CARTE, fg=VERT, font=police(10, True)).pack(side="left", padx=(0, 8))
+        libelle(ligne, texte, 10, largeur=250).pack(side="left", fill="x")
+    lien = tk.Label(self.cadre_etapes, text="Changer ces réglages  ›", bg=CARTE, fg=ACCENT, font=police(9), cursor="hand2", anchor="w")
+    lien.pack(fill="x", pady=(6, 0))
+    lien.bind("<Button-1>", lambda e: self.aller_a("Réglages", "Jeux"))
+
+
+@methode
+def charger_jeux(self):
+    def ensuite(jeux):
+        if isinstance(jeux, Exception) or not jeux:
+            jeux = JEUX_SECOURS
+            self.info_liste_jeux.config(text="Steam introuvable : voici une liste de secours. Double-clic sur un jeu pour le lancer.")
+        else:
+            self.info_liste_jeux.config(text=f"{len(jeux)} jeux Steam installés. Double-clic sur un jeu pour lancer la session.")
+        self.jeux = jeux
+        self.remplir_liste_jeux()
+    self.en_fond(jeux_steam, ensuite)
+
+
+@methode
+def remplir_liste_jeux(self):
+    totaux, derniers = {}, {}
+    for jour, parties in self.temps.items():
+        for jeu, sec in parties.items():
+            totaux[jeu] = totaux.get(jeu, 0) + sec
+            derniers[jeu] = max(derniers.get(jeu, ""), jour)
+    choix = self.liste_jeux.selection()
+    self.liste_jeux.delete(*self.liste_jeux.get_children())
+    for nom in self.jeux:
+        jour = derniers.get(nom)
+        quand = time.strftime("%d/%m/%Y", time.strptime(jour, "%Y-%m-%d")) if jour else "jamais"
+        self.liste_jeux.insert("", "end", iid=nom, values=(nom, duree_lisible(totaux[nom]) if nom in totaux else "-", quand))
+    garder = choix[0] if choix and choix[0] in self.jeux else next(iter(self.jeux), None)
+    if garder:
+        self.liste_jeux.selection_set(garder)
+
+
+@methode
+def lancer(self):
+    choix = self.liste_jeux.selection()
+    if not choix or self.session:
+        return
+    jeu = choix[0]
+    self.btn_lancer.activer(False)
+    self.info_gaming.config(text="Préparation...", fg=GRIS)
+
+    def travail():
+        session = {"jeu": jeu, "applis": {}, "plan": None}
+        # 1) On note où sont les applis, puis on les ferme
+        chemins = chemins_applis(APPS_A_FERMER)
+        for exe, chemin in chemins.items():
+            res = subprocess.run(["taskkill", "/IM", exe, "/F"], capture_output=True,
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if res.returncode == 0:
+                session["applis"][exe] = chemin
+        # 2) Plan d'alimentation Performances
+        if REGLAGES["mode_performances"]:
+            avant = plan_actif()
+            if avant and activer_plan("SCHEME_MIN"):
+                session["plan"] = avant
+        # 3) Discord + le jeu
+        discord = Path(LOCALAPPDATA) / "Discord" / "Update.exe"
+        if discord.exists():
+            subprocess.Popen([str(discord), "--processStart", "Discord.exe"])
+        os.startfile(f"steam://rungameid/{self.jeux[jeu]}")
+        return session
+
+    def ensuite(session):
+        if isinstance(session, Exception):
+            self.info_gaming.config(text=f"Erreur : {session}", fg=ROUGE)
+            self.btn_lancer.activer(True)
+            return
+        self.session = session
+        fermees = ", ".join(session["applis"]) or "aucune"
+        perf = "mode Performances activé" if session["plan"] else "plan d'alimentation inchangé"
+        self.info_gaming.config(text=f"🚀 {jeu} se lance. Applis fermées : {fermees}. {perf.capitalize()}. Bon jeu !", fg=TEXTE)
+        self.btn_fini.activer(True)
+    self.en_fond(travail, ensuite)
+
+
+@methode
+def fin_session(self):
+    if not self.session:
+        return
+    for exe, chemin in self.session["applis"].items():
+        if Path(chemin).exists():
+            subprocess.Popen([chemin])
+    if self.session["plan"]:
+        activer_plan(self.session["plan"])   # on remet ton plan d'avant
+    self.session = None
+    try:
+        self.info_gaming.config(text="👍 Tout est remis comme avant (applis et plan d'alimentation).", fg=GRIS)
+        self.btn_fini.activer(False)
+        self.btn_lancer.activer(True)
+    except tk.TclError:
+        pass   # la fenêtre est en train de se fermer
+
+
+# ---------- suivi : quel jeu tourne ? ----------
+
+@methode
+def suivre_jeu(self):
+    """Toutes les 20 s : quel jeu tourne ? On ajoute le temps écoulé à ce jeu, et on repère le début et la fin des parties."""
+    def ensuite(jeu):
+        maintenant = time.time()
+        ecoule = min(maintenant - self.dernier_releve, 60)   # max 60 s (si le PC était en veille)
+        self.dernier_releve = maintenant
+        if isinstance(jeu, Exception):
+            jeu = None
+        if jeu and jeu == self.jeu_actuel:
+            jour = time.strftime("%Y-%m-%d")
+            self.temps.setdefault(jour, {})
+            self.temps[jour][jeu] = self.temps[jour].get(jeu, 0) + ecoule
+            ecrire_json(FICHIER_TEMPS, self.temps)
+        if jeu != self.jeu_actuel:
+            if self.jeu_actuel:
+                self.fin_partie()
+            self.jeu_actuel, self.debut_jeu = jeu, maintenant
+            if jeu:
+                self.debut_partie(jeu)
+        self.afficher_temps()
+        self.racine.after(20 * 1000, self.suivre_jeu)
+    self.en_fond(lambda: jeu_en_cours(getattr(self, "jeux", {})), ensuite)
+
+
+@methode
+def debut_partie(self, jeu):
+    self.partie = {"jeu": jeu, "debut": time.time(), "cpu_max": 0, "gpu_max": 0}
+    profil = REGLAGES.get("profil_en_jeu", "Jeu")
+    if REGLAGES.get("auto_profil") and profil in REGLAGES.get("profils", {}) and REGLAGES.get("profil_actif") != profil:
+        self.profil_avant_jeu = REGLAGES.get("profil_actif")
+        self.activer_profil(profil, ouvrir=False)
+        self.notifier(f"{jeu} détecté : profil {profil} activé", "Je remettrai le profil d'avant à la fin de la partie.", "info",
+                      cle="auto profil", silence=60)
+
+
+@methode
+def noter_partie(self, cpu, gpu):
+    """Appelée à chaque relevé : retient les températures max de la partie en cours."""
+    partie = getattr(self, "partie", None)
+    if partie:
+        partie["cpu_max"] = max(partie["cpu_max"], cpu or 0)
+        partie["gpu_max"] = max(partie["gpu_max"], gpu or 0)
+
+
+@methode
+def fin_partie(self):
+    partie, self.partie = self.partie, None
+    avant = getattr(self, "profil_avant_jeu", None)
+    if REGLAGES.get("auto_profil") and avant and avant in REGLAGES.get("profils", {}):
+        self.activer_profil(avant, ouvrir=False)
+    self.profil_avant_jeu = None
+    if not partie:
+        return
+    duree = time.time() - partie["debut"]
+    if duree < 120:   # moins de 2 minutes : ce n'était pas vraiment une partie
+        return
+    self.sessions.append({"jeu": partie["jeu"], "debut": partie["debut"], "duree": duree,
+                          "cpu_max": partie["cpu_max"], "gpu_max": partie["gpu_max"]})
+    self.sessions = self.sessions[-200:]
+    ecrire_json(FICHIER_SESSIONS, self.sessions)
+    self.afficher_sessions()
+    self.remplir_liste_jeux()
+    temps = " · ".join(f"{nom} max {v:.0f} °C" for nom, v in (("processeur", partie["cpu_max"]), ("carte graphique", partie["gpu_max"])) if v)
+    self.notifier(f"Partie terminée : {partie['jeu']}", f"{duree_lisible(duree)} de jeu" + (f" · {temps}" if temps else ""),
+                  "info", lambda: self.aller_a("Jeux", "Sessions"), cle=f"partie {partie['debut']}")
+
+
+@methode
+def afficher_sessions(self):
+    self.liste_sessions.delete(*self.liste_sessions.get_children())
+    for s in reversed(self.sessions[-60:]):
+        self.liste_sessions.insert("", "end", values=(
+            s.get("jeu", "?"), quand_lisible(s.get("debut", 0)), duree_lisible(s.get("duree", 0)),
+            f"{s['cpu_max']:.0f} °C" if s.get("cpu_max") else "-", f"{s['gpu_max']:.0f} °C" if s.get("gpu_max") else "-"))
+    if self.sessions:
+        total = sum(s.get("duree", 0) for s in self.sessions)
+        self.info_sessions.config(text=pluriel(f"{len(self.sessions)} partie(s) enregistrée(s), {duree_lisible(total)} au total.", len(self.sessions)))
+    else:
+        self.info_sessions.config(text="Aucune partie enregistrée pour l'instant. Lance un jeu : le résumé arrivera ici à la fin.")
+
+
+@methode
+def afficher_temps(self):
+    if self.jeu_actuel:
+        self.info_jeu_actuel.config(text=f"🎮 En ce moment : {self.jeu_actuel} "
+                                         f"(depuis {duree_lisible(time.time() - self.debut_jeu)})", fg=VERT)
+    else:
+        self.info_jeu_actuel.config(text="💤 Aucun jeu lancé", fg=GRIS)
+
+    # Les 7 derniers jours, du plus ancien au plus récent
+    jours = [time.strftime("%Y-%m-%d", time.localtime(time.time() - i * 86400)) for i in range(6, -1, -1)]
+    par_jeu, par_jour = {}, []
+    for jour in jours:
+        total = 0
+        for jeu, sec in self.temps.get(jour, {}).items():
+            par_jeu[jeu] = par_jeu.get(jeu, 0) + sec
+            total += sec
+        par_jour.append(total)
+    self.info_totaux.config(text=f"Aujourd'hui : {duree_lisible(par_jour[-1])}   ·   "
+                                 f"7 derniers jours : {duree_lisible(sum(par_jour))}")
+    # Et sur l'accueil
+    if self.jeu_actuel:
+        self.dash_jeu.config(text=f"{self.jeu_actuel} · {duree_lisible(time.time() - self.debut_jeu)}"[:26], fg=CYAN)
+    else:
+        self.dash_jeu.config(text="Aucun jeu", fg=GRIS)
+    self.dash_semaine.config(text=f"7 derniers jours : {duree_lisible(sum(par_jour))}")
+    self.dash_top.config(text=f"Le plus joué : {max(par_jeu, key=par_jeu.get)}" if par_jeu else "")
+
+    # Graphique 1 : une barre horizontale par jeu (les 5 plus joués)
+    c = self.graph_jeux
+    c.delete("all")
+    larg = max(c.winfo_width(), 300)
+    classement = sorted(par_jeu.items(), key=lambda j: j[1], reverse=True)[:5]
+    if not classement:
+        c.create_text(larg / 2, 85, text="Pas encore de partie enregistrée cette semaine. Lance un jeu !", fill=GRIS, font=police(10))
+    plus_long = max([sec for _, sec in classement], default=1)
+    couleurs = [CYAN, ROSE, VIOLET, VERT, ORANGE]
+    for i, (jeu, sec) in enumerate(classement):
+        y = 12 + i * 31
+        c.create_text(4, y + 9, text=jeu[:24], fill=TEXTE, anchor="w", font=police(10))
+        fin = 200 + (larg - 300) * sec / plus_long
+        c.create_line(200, y + 9, larg - 100, y + 9, fill="#1c1c2c", width=12, capstyle="round")
+        c.create_line(200, y + 9, max(fin, 201), y + 9, fill=couleurs[i], width=12, capstyle="round")
+        c.create_text(larg - 84, y + 9, text=duree_lisible(sec), fill=GRIS, anchor="w", font=police(9))
+
+    # Graphique 2 : une colonne par jour
+    c = self.graph_jours
+    c.delete("all")
+    larg = max(c.winfo_width(), 300)
+    plus_long = max(par_jour + [3600])
+    pas = (larg - 20) / 7
+    noms_jours = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
+    for i, (jour, sec) in enumerate(zip(jours, par_jour)):
+        x = 10 + i * pas
+        haut = (130 - 46) * sec / plus_long
+        c.create_rectangle(x + pas * 0.25, 106 - max(haut, 2), x + pas * 0.75, 106, fill=VIOLET if i < 6 else CYAN, width=0)
+        c.create_text(x + pas / 2, 119, text=noms_jours[time.strptime(jour, "%Y-%m-%d").tm_wday], fill=GRIS, font=police(9))
+        if sec >= 60:
+            c.create_text(x + pas / 2, 97 - haut, text=duree_lisible(sec), fill=TEXTE, font=police(8))
+
+
+# =============================================================
+#  🎛 PROFILS  -  Jeu / Travail / Silence en un clic
+# =============================================================
+
+@methode
+def page_profils(self, cadre):
+    self.cadre_profils = tk.Frame(cadre, bg=FOND)
+    self.cadre_profils.pack(fill="x")
+    auto = Carte(cadre, padx=18, pady=12)
+    auto.pack(fill="x", pady=10)
+    ligne = tk.Frame(auto, bg=CARTE)
+    ligne.pack(fill="x")
+    libelle(ligne, "Changement automatique", 11, TEXTE, True).pack(side="left")
+    Bouton(ligne, "Régler  ›", lambda: self.aller_a("Réglages", "Jeux"), petit=True).pack(side="right")
+    self.info_auto_profil = libelle(auto, "", 9, GRIS, largeur=820)
+    self.info_auto_profil.pack(fill="x", pady=(2, 0))
+
+    edition = Carte(cadre, padx=18, pady=14)
+    edition.pack(fill="both", expand=True)
+    libelle(edition, "Modifier les profils", 12, TEXTE, True).pack(fill="x")
+    libelle(edition, "Sépare les applis par des virgules. « Fermer » : le nom du programme (Steam.exe). « Ouvrir » : un chemin, "
+                     "un lien (steam://...) ou simplement Discord. Les profils ne touchent jamais au volume de ton casque.",
+            9, GRIS, largeur=820).pack(fill="x", pady=(2, 8))
+    grille = tk.Frame(edition, bg=CARTE)
+    grille.pack(fill="x")
+    self.champs_profils = {}
+    grille.columnconfigure(2, weight=2)   # les deux dernières colonnes se partagent la place qui reste
+    grille.columnconfigure(3, weight=3)
+    for col, titre in enumerate(["", "Alimentation", "Applis à fermer", "Applis à ouvrir"]):
+        petit_titre(grille, titre).grid(row=0, column=col, sticky="w", padx=4, pady=(0, 4))
+    for rangee, (nom, p) in enumerate(REGLAGES["profils"].items(), start=1):
+        libelle(grille, f"{p.get('icone', '')}  {nom}", 10, TEXTE, True).grid(row=rangee, column=0, sticky="w", padx=(4, 12), pady=4)
+        plan = ttk.Combobox(grille, values=list(NOMS_PLANS.values()), state="readonly", width=20)
+        plan.set(NOMS_PLANS.get(p.get("plan"), "Utilisation normale"))
+        plan.grid(row=rangee, column=1, padx=4)
+        champs = {"plan": plan}
+        for col, cle, larg in ((2, "fermer", 18), (3, "ouvrir", 24)):
+            c = champ(grille, larg, valeur=", ".join(p.get(cle) or []))
+            c.grid(row=rangee, column=col, padx=4, ipady=4, sticky="ew")
+            champs[cle] = c
+        self.champs_profils[nom] = champs
+    Bouton(edition, "💾 Enregistrer les profils", self.sauver_profils, "principal").pack(anchor="w", pady=(12, 0))
+    self.dessiner_profils()
+
+
+@methode
+def dessiner_profils(self):
+    vider(self.cadre_profils)
+    actif = REGLAGES.get("profil_actif")
+    dernier = len(REGLAGES["profils"]) - 1
+    for col, (nom, p) in enumerate(REGLAGES["profils"].items()):
+        self.cadre_profils.columnconfigure(col, weight=1, uniform="p")
+        couleur = [CYAN, VIOLET, ROSE][col % 3]
+        c = Carte(self.cadre_profils, padx=18, pady=14, bordure=couleur if nom == actif else BORD)
+        c.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 4, 0 if col == dernier else 4))
+        haut = tk.Frame(c, bg=CARTE)
+        haut.pack(fill="x")
+        libelle(haut, f"{p.get('icone', '')}  {nom}", 16, couleur, True).pack(side="left")
+        if nom == actif:
+            tk.Label(haut, text=espacer("actif"), bg=CARTE, fg=couleur, font=police(8, True)).pack(side="right")
+        resume = ["Alimentation : " + NOMS_PLANS.get(p.get("plan"), "inchangée")]
+        if p.get("fermer"):
+            resume.append("Ferme " + ", ".join(a.replace(".exe", "") for a in p["fermer"]))
+        if p.get("ouvrir"):
+            resume.append("Ouvre " + ", ".join(a.split("://")[0].capitalize() if "://" in a else Path(a).stem for a in p["ouvrir"]))
+        libelle(c, "\n".join(resume), 9, GRIS, largeur=240).pack(fill="x", pady=(6, 10))
+        Bouton(c, "✓ Activé" if nom == actif else "Activer", lambda n=nom: self.activer_profil(n),
+               "discret" if nom == actif else "principal").pack(anchor="w")
+    if REGLAGES.get("auto_profil"):
+        self.info_auto_profil.config(text=f"Activé : dès qu'un jeu démarre, le profil {REGLAGES.get('profil_en_jeu', 'Jeu')} se met tout seul "
+                                          "(sans ouvrir d'appli), et le profil d'avant revient à la fin de la partie.", fg=VERT)
+    else:
+        self.info_auto_profil.config(text="Désactivé. Tu peux demander à la boîte à outils de passer toute seule au profil Jeu "
+                                          "quand un jeu démarre.", fg=GRIS)
+    self.maj_actions_rapides()
+
+
+@methode
+def activer_profil(self, nom, ouvrir=True):
+    if nom not in REGLAGES.get("profils", {}):
+        return
+
+    def ensuite(fait):
+        if isinstance(fait, Exception):
+            self.toast(f"Profil {nom} : erreur ({fait})", "alerte")
+            return
+        self.toast(f"Profil {nom} activé" + (" : " + ", ".join(fait) if fait else ""))
+        self.dessiner_profils()
+    self.en_fond(lambda: appliquer_profil(nom, ouvrir), ensuite)
+
+
+@methode
+def sauver_profils(self):
+    plans = {v: k for k, v in NOMS_PLANS.items()}
+    for nom, champs in self.champs_profils.items():
+        p = REGLAGES["profils"][nom]
+        p["plan"] = plans.get(champs["plan"].get(), "SCHEME_BALANCED")
+        p["fermer"] = [a.strip() for a in champs["fermer"].get().split(",") if a.strip()]
+        p["ouvrir"] = [a.strip() for a in champs["ouvrir"].get().split(",") if a.strip()]
+        p["volume"] = None   # les profils ne règlent plus le volume (demande de Crz)
+    enregistrer_reglages()
+    self.dessiner_profils()
+    self.toast("Profils enregistrés")
+
+
+# =============================================================
+#  🔊 SOUNDBOARD
+# =============================================================
+
+@methode
+def page_soundboard(self, cadre):
+    haut = tk.Frame(cadre, bg=CARTE)
+    haut.pack(fill="x")
+    libelle(haut, "Tes sons", 13, TEXTE, True).pack(side="left")
+    Bouton(haut, "⏹ Tout arrêter", stopper_sons, "danger", petit=True).pack(side="right")
+    Bouton(haut, "➕ Ajouter un son", self.ajouter_son, "succes", petit=True).pack(side="right", padx=8)
+
+    sorties = tk.Frame(cadre, bg=CARTE)
+    sorties.pack(fill="x", pady=(10, 2))
+    libelle(sorties, "Envoyer vers Discord (câble virtuel)", 10, GRIS).grid(row=0, column=0, sticky="w", pady=3)
+    libelle(sorties, "Et l'entendre dans", 10, GRIS).grid(row=1, column=0, sticky="w", pady=3)
+    self.choix_discord = ttk.Combobox(sorties, state="readonly", width=44)
+    self.choix_ecoute = ttk.Combobox(sorties, state="readonly", width=44)
+    self.choix_discord.grid(row=0, column=1, padx=10, sticky="w")
+    self.choix_ecoute.grid(row=1, column=1, padx=10, sticky="w")
+    for c in (self.choix_discord, self.choix_ecoute):
+        c.bind("<<ComboboxSelected>>", lambda e: self.sauver_sorties())
+    Bouton(sorties, "🔄", self.lister_sorties, petit=True).grid(row=0, column=2)
+    self.aide_soundboard = libelle(cadre, "", 9, GRIS, largeur=860)
+    self.aide_soundboard.pack(fill="x", pady=(4, 10))
+    self.grille_sons = tk.Frame(cadre, bg=CARTE)
+    self.grille_sons.pack(fill="both", expand=True)
+    libelle(cadre, "Clic : jouer   ·   clic droit : renommer, volume, couleur, supprimer   ·   "
+                   "les mêmes sons sont sur le Stream Deck et le téléphone", 9, GRIS).pack(fill="x")
+    self.lister_sorties()
+    self.dessiner_sons()
+
+
+@methode
+def lister_sorties(self):
+    audio = charger_audio()
+    if not audio:
+        self.aide_soundboard.config(text="Pour commencer, clique sur « Ajouter un son » : je te proposerai d'installer les 2 petites "
+                                         "librairies nécessaires.", fg=ORANGE)
+        return
+    noms = sorties_audio(audio[0])
+    self.choix_discord.config(values=["(aucune)"] + noms)
+    self.choix_ecoute.config(values=["(sortie par défaut)", "(aucune)"] + noms)
+    self.choix_discord.set(REGLAGES.get("sortie_discord") or "(aucune)")
+    self.choix_ecoute.set(REGLAGES.get("sortie_ecoute") or "(sortie par défaut)")
+    cable = [n for n in noms if "CABLE Input" in n or "VoiceMeeter Input" in n]
+    if cable and not REGLAGES.get("sortie_discord"):
+        self.choix_discord.set(cable[0])
+        self.sauver_sorties()
+    if not cable:
+        self.aide_soundboard.config(text="Pour que Discord entende les sons, il faut un « câble audio virtuel » : installe VB-CABLE "
+                                         "(gratuit, vb-audio.com/Cable), puis relance la boîte à outils.", fg=ORANGE)
+    else:
+        self.aide_soundboard.config(text="✓ Câble virtuel trouvé. Dans Discord : Paramètres > Voix et vidéo > Périphérique d'entrée "
+                                         "= « CABLE Output ». Pour ta voix : Windows > Son > ton micro > Propriétés > Écouter > "
+                                         "coche « Écouter ce périphérique » et choisis « CABLE Input ».", fg=GRIS)
+
+
+@methode
+def sauver_sorties(self):
+    d, e = self.choix_discord.get(), self.choix_ecoute.get()
+    REGLAGES["sortie_discord"] = "" if d.startswith("(") else d
+    REGLAGES["sortie_ecoute"] = "" if e == "(sortie par défaut)" else (None if e == "(aucune)" else e)
+    enregistrer_reglages()
+
+
+@methode
+def dessiner_sons(self):
+    vider(self.grille_sons)
+    if not REGLAGES["sons"]:
+        libelle(self.grille_sons, "Aucun son pour l'instant", 13, GRIS, True).pack(pady=(40, 4))
+        libelle(self.grille_sons, "Clique sur « Ajouter un son » et choisis des fichiers .mp3, .wav ou .ogg.", 10, GRIS).pack()
+        return
+    for i, son in enumerate(REGLAGES["sons"]):
+        self.grille_sons.columnconfigure(i % 5, weight=1, uniform="s")
+        couleur = son.get("couleur", CYAN)
+        pad = tk.Label(self.grille_sons, text=son["nom"], bg=SURFACE, fg=couleur, font=police(12, True), wraplength=140,
+                       highlightthickness=2, highlightbackground=couleur, cursor="hand2", height=3)
+        pad.grid(row=i // 5, column=i % 5, sticky="nsew", padx=5, pady=5)
+        pad.bind("<Button-1>", lambda e, s=son["id"]: threading.Thread(target=jouer_son, args=(s,), daemon=True).start())
+        pad.bind("<Enter>", lambda e, w=pad, c=couleur: w.config(bg=melanger(SURFACE, c, 0.2)))
+        pad.bind("<Leave>", lambda e, w=pad: w.config(bg=SURFACE))
+        pad.bind("<Button-3>", lambda e, s=son: self.menu_son(e, s))
+
+
+@methode
+def ajouter_son(self):
+    if not charger_audio(self.racine):
+        return
+    self.lister_sorties()
+    fichiers = filedialog.askopenfilenames(title="Choisis un ou plusieurs sons",
+                                           filetypes=[("Sons", "*.mp3 *.wav *.ogg *.flac"), ("Tous", "*.*")])
+    DOSSIER_SONS.mkdir(parents=True, exist_ok=True)
+    for f in fichiers:
+        source = Path(f)
+        copie = DOSSIER_SONS / source.name   # on garde une copie, même si tu supprimes l'original
+        if not copie.exists():
+            shutil.copy2(source, copie)
+        REGLAGES["sons"].append({"id": secrets.token_hex(4), "nom": source.stem[:24], "fichier": str(copie),
+                                 "volume": 80, "couleur": COULEURS_SONS[len(REGLAGES["sons"]) % len(COULEURS_SONS)]})
+    enregistrer_reglages()
+    self.dessiner_sons()
+
+
+@methode
+def menu_son(self, evenement, son):
+    from tkinter import simpledialog
+    menu = tk.Menu(self.racine, tearoff=0, bg=CARTE, fg=TEXTE, activebackground=ACCENT, activeforeground=FOND)
+
+    def renommer():
+        nom = simpledialog.askstring("Renommer", "Nouveau nom :", initialvalue=son["nom"], parent=self.racine)
+        if nom:
+            son["nom"] = nom[:24]
+            enregistrer_reglages()
+            self.dessiner_sons()
+
+    def volume():
+        v = simpledialog.askinteger("Volume du son", "Volume de ce son (0 à 150 %) :", initialvalue=son.get("volume", 80),
+                                    minvalue=0, maxvalue=150, parent=self.racine)
+        if v is not None:
+            son["volume"] = v
+            enregistrer_reglages()
+
+    def couleur():
+        son["couleur"] = COULEURS_SONS[(COULEURS_SONS.index(son.get("couleur", CYAN)) + 1) % len(COULEURS_SONS)] \
+            if son.get("couleur") in COULEURS_SONS else CYAN
+        enregistrer_reglages()
+        self.dessiner_sons()
+
+    def supprimer_son():
+        if messagebox.askyesno("Supprimer", f"Retirer « {son['nom']} » du soundboard ?"):
+            REGLAGES["sons"].remove(son)
+            enregistrer_reglages()
+            self.dessiner_sons()
+    menu.add_command(label="✏️ Renommer", command=renommer)
+    menu.add_command(label="🔉 Volume de ce son", command=volume)
+    menu.add_command(label="🎨 Changer la couleur", command=couleur)
+    menu.add_separator()
+    menu.add_command(label="🗑 Supprimer", command=supprimer_son)
+    menu.tk_popup(evenement.x_root, evenement.y_root)
+
+
+# =============================================================
+#  🧹 ENTRETIEN  -  nettoyer, ranger, démarrage de Windows
+# =============================================================
+
+def programmes_demarrage():
+    """Ce que Windows lance à l'ouverture de ta session : [(nom, commande, activé ?, où)].
+    On LIT seulement le registre et le dossier Démarrage : rien n'est modifié."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    base = r"Software\Microsoft\Windows\CurrentVersion"
+
+    def valeurs(racine, chemin):
+        trouve = {}
+        try:
+            with winreg.OpenKey(racine, chemin) as cle:
+                i = 0
+                while True:
+                    try:
+                        nom, valeur, _ = winreg.EnumValue(cle, i)
+                    except OSError:
+                        break
+                    trouve[nom] = valeur
+                    i += 1
+        except OSError:
+            pass
+        return trouve
+
+    def actif(approuves, nom):   # Windows note ici ce que tu as désactivé (1er octet impair = désactivé)
+        v = approuves.get(nom)
+        return not (isinstance(v, bytes) and v and v[0] % 2 == 1)
+
+    resultat = []
+    for racine, run, approuve, ou in (
+            (winreg.HKEY_CURRENT_USER, base + r"\Run", base + r"\Explorer\StartupApproved\Run", "ton compte"),
+            (winreg.HKEY_LOCAL_MACHINE, base + r"\Run", base + r"\Explorer\StartupApproved\Run", "tout le PC"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run",
+             base + r"\Explorer\StartupApproved\Run32", "tout le PC")):
+        approuves = valeurs(racine, approuve)
+        for nom, commande in valeurs(racine, run).items():
+            resultat.append((nom, str(commande), actif(approuves, nom), ou))
+    approuves = valeurs(winreg.HKEY_CURRENT_USER, base + r"\Explorer\StartupApproved\StartupFolder")
+    try:
+        for f in LANCEUR_DEMARRAGE.parent.iterdir():
+            if f.suffix.lower() in (".lnk", ".vbs", ".bat", ".cmd", ".exe", ".url"):
+                nom = "Boîte à outils (cette appli)" if f.name == LANCEUR_DEMARRAGE.name else f.stem
+                resultat.append((nom, str(f), actif(approuves, f.name), "dossier Démarrage"))
+    except OSError:
+        pass
+    return sorted(resultat, key=lambda r: (not r[2], r[0].lower()))
+
+
+@methode
+def page_entretien(self, cadre):
+    onglets = self.sous_pages["Entretien"] = Onglets(cadre)
+    onglets.pack(fill="both", expand=True)
+
+    # ----- Nettoyer -----
+    nettoyer = onglets.ajouter("Nettoyer")
+    libelle(nettoyer, "Faire de la place", 13, TEXTE, True).pack(fill="x")
+    libelle(nettoyer, "1. Coche ce que tu veux nettoyer.   2. « Analyser » montre la place que ça libère.   "
+                      "3. « Nettoyer » demande confirmation, puis supprime.", 9, GRIS, largeur=860).pack(fill="x", pady=(2, 8))
+    self.cadre_zones = tk.Frame(nettoyer, bg=CARTE)
+    self.cadre_zones.pack(fill="x", pady=4)
+    self.construire_zones()
+    boutons = tk.Frame(nettoyer, bg=CARTE)
+    boutons.pack(fill="x", pady=(8, 0))
+    Bouton(boutons, "🔍 Analyser", self.analyser, "principal").pack(side="left", padx=(0, 8))
+    self.btn_nettoyer = Bouton(boutons, "🧹 Nettoyer", self.nettoyer, "succes")
+    self.btn_nettoyer.pack(side="left")
+    self.btn_nettoyer.activer(False)
+    self.resultat_nettoyage = libelle(nettoyer, "", 11, VERT, True)
+    self.resultat_nettoyage.pack(fill="x", pady=(10, 0))
+    self.info_dernier_nettoyage = libelle(nettoyer, "", 9, GRIS)
+    self.info_dernier_nettoyage.pack(fill="x")
+    self.afficher_dernier_nettoyage()
+
+    # ----- Ranger -----
+    ranger_ = onglets.ajouter("Ranger")
+    libelle(ranger_, "Ranger un dossier", 13, TEXTE, True).pack(fill="x")
+    libelle(ranger_, "Range les fichiers en vrac d'un dossier dans des sous-dossiers par type (Images, Vidéos, Documents...). "
+                     "Rien n'est supprimé, et les sous-dossiers existants ne sont pas touchés.", 9, GRIS, largeur=860).pack(fill="x", pady=(2, 8))
+    self.info_dossier_rangeur = libelle(ranger_, f"Dossier à ranger : {DOSSIER_A_RANGER}", 10, TEXTE)
+    self.info_dossier_rangeur.pack(fill="x")
+    lien = tk.Label(ranger_, text="Changer de dossier  ›", bg=CARTE, fg=ACCENT, font=police(9), cursor="hand2", anchor="w")
+    lien.pack(fill="x")
+    lien.bind("<Button-1>", lambda e: self.aller_a("Réglages", "Général"))
+    boutons = tk.Frame(ranger_, bg=CARTE)
+    boutons.pack(fill="x", pady=10)
+    Bouton(boutons, "🔍 Aperçu", self.voir_apercu, "principal").pack(side="left", padx=(0, 8))
+    self.btn_ranger = Bouton(boutons, "📂 Ranger", self.lancer_rangement, "succes")
+    self.btn_ranger.pack(side="left")
+    self.btn_ranger.activer(False)
+    self.apercu = libelle(ranger_, "Clique sur Aperçu pour voir ce qui serait rangé (ça ne déplace rien).", 10, GRIS)
+    self.apercu.pack(fill="x")
+    self.plan = {}
+
+    # ----- Démarrage -----
+    demarrage = onglets.ajouter("Démarrage")
+    tete = tk.Frame(demarrage, bg=CARTE)
+    tete.pack(fill="x")
+    libelle(tete, "Ce qui se lance avec Windows", 13, TEXTE, True).pack(side="left")
+    Bouton(tete, "🪟 Régler dans Windows", lambda: os.startfile("ms-settings:startupapps"), petit=True).pack(side="right")
+    Bouton(tete, "🔄 Actualiser", self.charger_demarrage, petit=True).pack(side="right", padx=8)
+    libelle(demarrage, "Plus il y a de programmes au démarrage, plus le PC met de temps à être prêt. Cette liste est en lecture seule : "
+                       "pour en désactiver un, utilise le bouton « Régler dans Windows ».", 9, GRIS, largeur=860).pack(fill="x", pady=(2, 8))
+    self.liste_demarrage = ttk.Treeview(demarrage, columns=("nom", "etat", "ou"), show="headings", height=13, selectmode="none")
+    for col, titre, larg in (("nom", "Programme", 420), ("etat", "État", 130), ("ou", "Pour", 170)):
+        self.liste_demarrage.heading(col, text=titre, anchor="w")
+        self.liste_demarrage.column(col, width=larg, anchor="w")
+    self.liste_demarrage.tag_configure("off", foreground=ETEINT)
+    self.liste_demarrage.pack(fill="both", expand=True)
+    self.info_demarrage = libelle(demarrage, "", 9, GRIS)
+    self.info_demarrage.pack(fill="x", pady=(6, 0))
+    onglets.quand_change = lambda nom: nom == "Démarrage" and self.charger_demarrage()
+
+
+@methode
+def afficher_dernier_nettoyage(self):
+    dernier = REGLAGES.get("dernier_nettoyage")
+    if not dernier:
+        self.info_dernier_nettoyage.config(text="Aucun nettoyage fait avec la boîte à outils pour l'instant.")
+        return
+    try:
+        jours = int((time.time() - time.mktime(time.strptime(dernier, "%Y-%m-%d"))) // 86400)
+    except ValueError:
+        return
+    self.info_dernier_nettoyage.config(text="Dernier nettoyage : " + ("aujourd'hui." if jours <= 0 else pluriel(f"il y a {jours} jour(s).", jours)))
+
+
+@methode
+def construire_zones(self):
+    """(Re)crée une case à cocher par zone de nettoyage."""
+    vider(self.cadre_zones)
+    self.zones = zones_nettoyage()
+    self.clips = []
+    for zone in self.zones:
+        ligne = tk.Frame(self.cadre_zones, bg=CARTE)
+        ligne.pack(fill="x", pady=2)
+        zone["var"] = tk.BooleanVar(value=zone["coche"])
+        tk.Checkbutton(ligne, text=zone["nom"], variable=zone["var"], bg=CARTE, fg=TEXTE, selectcolor=CHAMP,
+                       activebackground=CARTE, activeforeground=TEXTE, font=police(10), anchor="w",
+                       highlightthickness=0, bd=0).pack(side="left")
+        zone["taille_lbl"] = tk.Label(ligne, text="", bg=CARTE, fg=ACCENT, font=police(10, True))
+        zone["taille_lbl"].pack(side="right")
+        zone["taille"] = 0
+
+
+@methode
+def analyser(self):
+    self.resultat_nettoyage.config(text="Analyse en cours...", fg=GRIS)
+
+    def travail():
+        tailles = {}
+        for zone in self.zones:
+            if zone["cle"] == "medal":
+                clips = vieux_clips()
+                tailles["medal"] = (sum(c.stat().st_size for c in clips), clips)
+            else:
+                tailles[zone["cle"]] = (sum(taille_dossier(d) for d in zone["dossiers"] if d.exists()), None)
+        return tailles
+
+    def ensuite(tailles):
+        if isinstance(tailles, Exception):
+            self.resultat_nettoyage.config(text=f"Erreur : {tailles}", fg=ROUGE)
+            return
+        for zone in self.zones:
+            zone["taille"], clips = tailles[zone["cle"]]
+            texte = taille_lisible(zone["taille"])
+            if zone["cle"] == "medal":
+                self.clips = clips
+                texte = f"{len(clips)} clips · {texte}" if DOSSIER_MEDAL.exists() else "dossier introuvable"
+            zone["taille_lbl"].config(text=texte)
+        total = sum(z["taille"] for z in self.zones if z["var"].get())
+        self.resultat_nettoyage.config(text=f"Les cases cochées libéreraient environ {taille_lisible(total)}.", fg=TEXTE)
+        self.btn_nettoyer.activer(True)
+    self.en_fond(travail, ensuite)
+
+
+@methode
+def nettoyer(self):
+    choisies = [z for z in self.zones if z["var"].get()]
+    if not choisies:
+        self.resultat_nettoyage.config(text="Coche au moins une case 👆", fg=ORANGE)
+        return
+    liste = "\n".join(f"• {z['nom'].split(' (')[0]} : {taille_lisible(z['taille'])}" for z in choisies)
+    if not messagebox.askyesno("Nettoyer", f"Je nettoie :\n\n{liste}\n\nOn y va ?"):
+        return
+    self.resultat_nettoyage.config(text="Nettoyage en cours...", fg=GRIS)
+
+    def travail():
+        libere = 0
+        for zone in choisies:
+            if zone["cle"] == "medal":
+                libere += supprimer(self.clips)
+            elif zone["cle"] == "maj":
+                if nettoyer_maj_windows():
+                    libere += zone["taille"]
+            else:
+                avant = sum(taille_dossier(d) for d in zone["dossiers"])
+                for d in zone["dossiers"]:
+                    vider_dossier(d)
+                libere += avant - sum(taille_dossier(d) for d in zone["dossiers"])
+        return libere
+
+    def ensuite(libere):
+        if isinstance(libere, Exception):
+            self.resultat_nettoyage.config(text=f"Erreur : {libere}", fg=ROUGE)
+            return
+        self.noter("nettoye", libere, "somme")
+        REGLAGES["dernier_nettoyage"] = time.strftime("%Y-%m-%d")
+        enregistrer_reglages()
+        self.afficher_dernier_nettoyage()
+        self.analyser()
+        self.racine.after(1500, lambda: self.resultat_nettoyage.config(text=f"✓ {taille_lisible(libere)} libérés !", fg=VERT))
+        self.toast(f"{taille_lisible(libere)} libérés")
+    self.en_fond(travail, ensuite)
+
+
+@methode
+def voir_apercu(self):
+    self.plan = plan_rangement()
+    if not DOSSIER_A_RANGER.exists():
+        self.apercu.config(text=f"Le dossier {DOSSIER_A_RANGER} n'existe pas. Change-le dans les Réglages.", fg=ORANGE)
+        self.btn_ranger.activer(False)
+    elif not self.plan:
+        self.apercu.config(text="Rien à ranger, c'est déjà propre ✨", fg=VERT)
+        self.btn_ranger.activer(False)
+    else:
+        lignes = [pluriel(f"{cat} : {len(liste)} fichier(s)", len(liste)) for cat, liste in sorted(self.plan.items())]
+        self.apercu.config(text="Voilà ce qui serait rangé :\n\n" + "\n".join(lignes), fg=TEXTE)
+        self.btn_ranger.activer(True)
+
+
+@methode
+def lancer_rangement(self):
+    total = sum(len(l) for l in self.plan.values())
+    if total and messagebox.askyesno("Ranger", f"Ranger ces {total} fichiers dans des sous-dossiers de\n{DOSSIER_A_RANGER} ?"):
+        n = ranger(self.plan)
+        self.apercu.config(text=pluriel(f"✓ {n} fichier(s) rangé(s) !", n), fg=VERT)
+        self.btn_ranger.activer(False)
+
+
+@methode
+def charger_demarrage(self):
+    def ensuite(programmes):
+        if isinstance(programmes, Exception):
+            programmes = []
+        self.liste_demarrage.delete(*self.liste_demarrage.get_children())
+        for nom, commande, actif, ou in programmes:
+            self.liste_demarrage.insert("", "end", values=(nom, "Activé" if actif else "Désactivé", ou), tags=() if actif else ("off",))
+        actifs = sum(1 for p in programmes if p[2])
+        if programmes:
+            self.info_demarrage.config(text=pluriel(f"{actifs} programme(s) activé(s)", actifs) + f" au démarrage sur {len(programmes)}. "
+                                            "Certaines applis (Discord, Steam...) ont aussi leur propre réglage « lancer au démarrage ».")
+        else:
+            self.info_demarrage.config(text="Aucun programme trouvé (ou lecture impossible).")
+    self.en_fond(programmes_demarrage, ensuite)
+
+
+# =============================================================
+#  📊 RAPPORT DE LA SEMAINE
+# =============================================================
+
+@methode
+def preparer_stats(self):
+    self.stats = charger_json(FICHIER_STATS, {})
+    self.stats_a_sauver = False
+    self.racine.after(60 * 1000, self.sauver_stats)
+
+
+@methode
+def noter(self, cle, valeur, mode="max"):
+    """Ajoute une statistique du jour (mode "max" = on garde la plus grande, "somme" = on additionne)."""
+    if valeur is None:
+        return
+    jour = self.stats.setdefault(time.strftime("%Y-%m-%d"), {})
+    jour[cle] = max(jour.get(cle, 0), valeur) if mode == "max" else jour.get(cle, 0) + valeur
+    self.stats_a_sauver = True
+
+
+@methode
+def sauver_stats(self):
+    if self.stats_a_sauver:
+        ecrire_json(FICHIER_STATS, self.stats)
+        self.stats_a_sauver = False
+    try:   # garde-fou : si plantage.txt enfle (plus de 2 Mo), on arrête d'y écrire
+        if _FICHIER_PLANTAGE and (DOSSIER_APPLI / "plantage.txt").stat().st_size > 2_000_000:
+            import faulthandler
+            faulthandler.disable()
+    except OSError:
+        pass
+    self.racine.after(60 * 1000, self.sauver_stats)
+
+
+@methode
+def page_rapport(self, cadre):
+    haut = tk.Frame(cadre, bg=CARTE)
+    haut.pack(fill="x")
+    self.titre_rapport = libelle(haut, "", 13, TEXTE, True)
+    self.titre_rapport.pack(side="left")
+    self.choix_semaine = -1
+    self.boutons_semaine = {}
+    for valeur, nom in ((0, "Cette semaine"), (-1, "Semaine dernière")):
+        b = tk.Label(haut, text=nom, bg=CARTE, fg=GRIS, font=police(9, True), padx=10, pady=4, cursor="hand2")
+        b.pack(side="right", padx=(6, 0))
+        b.bind("<Button-1>", lambda e, v=valeur: self.choisir_semaine(v))
+        self.boutons_semaine[valeur] = b
+    self.cadre_rapport = tk.Frame(cadre, bg=CARTE)
+    self.cadre_rapport.pack(fill="both", expand=True, pady=(10, 0))
+    self.choisir_semaine(-1 if any(bilan_semaine(self.stats, charger_temps(), -1).values()) else 0)
+    # Le lundi (ou au 1er lancement de la semaine), on te le signale
+    semaine = time.strftime("%G-%V")
+    if REGLAGES.get("dernier_rapport") != semaine:
+        REGLAGES["dernier_rapport"] = semaine
+        enregistrer_reglages()
+        b = bilan_semaine(self.stats, charger_temps(), -1)
+        if b["jeu_total"] or b["cpu_max"] or b["gpu_max"]:
+            self.racine.after(6000, lambda: self.notifier("Ton rapport de la semaine est prêt",
+                                                          f"{duree_lisible(b['jeu_total'])} de jeu la semaine dernière.", "info",
+                                                          lambda: self.aller_a("Rapport"), cle="rapport " + semaine))
+
+
+@methode
+def choisir_semaine(self, decalage):
+    self.choix_semaine = decalage
+    for v, b in self.boutons_semaine.items():
+        b.config(bg=melanger(CARTE, ACCENT, 0.18) if v == decalage else CARTE, fg=ACCENT if v == decalage else GRIS)
+    self.afficher_rapport()
+
+
+@methode
+def afficher_rapport(self):
+    vider(self.cadre_rapport)
+    decalage = self.choix_semaine
+    temps = charger_temps()
+    b = bilan_semaine(self.stats, temps, decalage)
+    avant = bilan_semaine(self.stats, temps, decalage - 1)
+    debut = time.strftime("%d/%m", time.strptime(b["jours"][0], "%Y-%m-%d"))
+    fin = time.strftime("%d/%m", time.strptime(b["jours"][-1], "%Y-%m-%d"))
+    self.titre_rapport.config(text=f"Semaine du {debut} au {fin}")
+
+    grille = tk.Frame(self.cadre_rapport, bg=CARTE)
+    grille.pack(fill="x")
+    ecart = b["jeu_total"] - avant["jeu_total"]
+    tendance = (f"{'+' if ecart >= 0 else '−'}{duree_lisible(abs(ecart))} vs semaine d'avant" if avant["jeu_total"] else "")
+    cases = [
+        ("Temps de jeu", duree_lisible(b["jeu_total"]), tendance, CYAN),
+        ("Processeur au plus chaud", f"{b['cpu_max']:.0f}°" if b["cpu_max"] else "--",
+         "a dépassé ton alerte" if b["cpu_max"] >= ALERTE_CPU else "rien à signaler", ROUGE if b["cpu_max"] >= ALERTE_CPU else CYAN),
+        ("Carte graphique au plus chaud", f"{b['gpu_max']:.0f}°" if b["gpu_max"] else "--",
+         "a dépassé ton alerte" if b["gpu_max"] >= ALERTE_GPU else "rien à signaler", ROUGE if b["gpu_max"] >= ALERTE_GPU else ROSE),
+        ("Place libérée", taille_lisible(b["nettoye"]), "avec le nettoyeur", VERT),
+        ("Mises à jour", str(int(b["maj"])), "applis mises à jour", VIOLET),
+    ]
+    for col, (titre, valeur, detail, couleur) in enumerate(cases):
+        grille.columnconfigure(col, weight=1, uniform="r")
+        c = tk.Frame(grille, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, padx=12, pady=10)
+        c.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 4, 4))
+        libelle(c, titre.upper(), 7, GRIS, True, SURFACE, largeur=140).pack(fill="x")
+        libelle(c, valeur, 20, couleur, True, SURFACE).pack(fill="x")
+        libelle(c, detail, 9, GRIS, fond=SURFACE, largeur=150).pack(fill="x")
+
+    bas = tk.Frame(self.cadre_rapport, bg=CARTE)
+    bas.pack(fill="both", expand=True, pady=(14, 0))
+    bas.columnconfigure(0, weight=1, uniform="b")
+    bas.columnconfigure(1, weight=1, uniform="b")
+    gauche = tk.Frame(bas, bg=CARTE)
+    gauche.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+    petit_titre(gauche, "Tes jeux les plus joués").pack(fill="x", pady=(0, 6))
+    if not b["top"]:
+        libelle(gauche, "Pas de partie cette semaine-là.", 10, GRIS).pack(fill="x")
+    for rang, (jeu, sec) in enumerate(b["top"], start=1):
+        ligne = tk.Frame(gauche, bg=CARTE)
+        ligne.pack(fill="x", pady=3)
+        tk.Label(ligne, text=str(rang), bg=melanger(CARTE, [CYAN, ROSE, VIOLET][rang - 1], 0.25), fg=TEXTE, font=police(10, True), width=3).pack(side="left")
+        libelle(ligne, jeu, 11, TEXTE, True).pack(side="left", padx=10)
+        libelle(ligne, duree_lisible(sec), 10, GRIS).pack(side="right")
+    semaine = set(b["jours"])
+    parties = [s for s in getattr(self, "sessions", []) if time.strftime("%Y-%m-%d", time.localtime(s.get("debut", 0))) in semaine]
+    if parties:
+        plus_longue = max(parties, key=lambda s: s.get("duree", 0))
+        libelle(gauche, f"{len(parties)} partie{'s' if len(parties) > 1 else ''} · la plus longue : {plus_longue['jeu']} ({duree_lisible(plus_longue['duree'])})",
+                9, GRIS, largeur=380).pack(fill="x", pady=(8, 0))
+    droite = tk.Frame(bas, bg=CARTE)
+    droite.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+    petit_titre(droite, "Temps de jeu par jour").pack(fill="x", pady=(0, 6))
+    toile = tk.Canvas(droite, bg=CARTE, height=150, highlightthickness=0)
+    toile.pack(fill="x")
+    par_jour = [sum(temps.get(j, {}).values()) for j in b["jours"]]
+
+    def dessiner(_evt=None):
+        toile.delete("all")
+        larg, plus_long = max(toile.winfo_width(), 280), max(par_jour + [3600])
+        pas = (larg - 10) / 7
+        for i, sec in enumerate(par_jour):
+            x, haut = 5 + i * pas, 96 * sec / plus_long
+            toile.create_rectangle(x + pas * 0.22, 122 - max(haut, 2), x + pas * 0.78, 122, fill=VIOLET if sec else "#1c1c2c", width=0)
+            toile.create_text(x + pas / 2, 136, text=["lun", "mar", "mer", "jeu", "ven", "sam", "dim"][i], fill=GRIS, font=police(9))
+            if sec >= 60:
+                toile.create_text(x + pas / 2, 113 - haut, text=duree_lisible(sec), fill=TEXTE, font=police(8))
+    toile.bind("<Configure>", dessiner)
+
+
+# =============================================================
+#  🔐 COFFRE-FORT et 🔔 ALERTE PRIX
+# =============================================================
+
+@methode
+def page_coffre(self, cadre):
+    self.coffre = Coffre(cadre, self.racine)
+
+
+@methode
+def page_prix(self, cadre):
+    libelle(cadre, "Surveiller un prix", 13, TEXTE, True).pack(fill="x")
+    libelle(cadre, "1. Colle le lien de la page du produit.   2. Écris le prix que tu vises.   3. Laisse la boîte à outils ouverte "
+                   "(ou près de l'horloge) : elle vérifie régulièrement et te prévient.", 9, GRIS, largeur=860).pack(fill="x", pady=(2, 12))
+    petit_titre(cadre, "Lien de la page du produit").pack(fill="x")
+    self.champ_url = champ(cadre, 60, valeur=REGLAGES.get("prix_url", ""))
+    self.champ_url.pack(fill="x", ipady=6, pady=(2, 10))
+    petit_titre(cadre, "Me prévenir quand le prix passe sous (en euros)").pack(fill="x")
+    self.champ_cible = champ(cadre, 12, valeur=REGLAGES.get("prix_cible", ""))
+    self.champ_cible.pack(anchor="w", ipady=6, pady=(2, 12))
+    self.btn_surveiller = Bouton(cadre, "🔔 Surveiller ce prix", self.basculer_surveillance, "principal")
+    self.btn_surveiller.pack(anchor="w")
+    self.info_prix = libelle(cadre, "", 11, TEXTE, largeur=860)
+    self.info_prix.pack(fill="x", pady=(14, 0))
+    libelle(cadre, "Certains sites (Amazon surtout) bloquent ce genre de lecture automatique : si aucun prix n'est trouvé, "
+                   "essaie le lien d'une autre boutique.", 9, GRIS, largeur=860).pack(fill="x", pady=(6, 0))
+    self.surveillance = False
+    self.prochaine_verif = None
+
+
+@methode
+def basculer_surveillance(self):
+    if self.surveillance:
+        self.surveillance = False
+        if self.prochaine_verif:
+            self.racine.after_cancel(self.prochaine_verif)   # annule la vérif prévue
+            self.prochaine_verif = None
+        self.btn_surveiller.changer("🔔 Surveiller ce prix", "principal")
+        self.info_prix.config(text="Surveillance arrêtée.", fg=GRIS)
+        return
+    try:
+        self.cible = float(self.champ_cible.get().replace(",", ".").replace("€", "").strip())
+    except ValueError:
+        self.info_prix.config(text="Le prix visé doit être un nombre (par exemple 799).", fg=ORANGE)
+        return
+    self.url = self.champ_url.get().strip()
+    if not self.url.startswith("http"):
+        self.info_prix.config(text="Colle un lien complet, qui commence par http.", fg=ORANGE)
+        return
+    REGLAGES["prix_url"], REGLAGES["prix_cible"] = self.url, self.champ_cible.get().strip()
+    enregistrer_reglages()
+    self.surveillance = True
+    self.btn_surveiller.changer("⏹ Arrêter la surveillance", "danger")
+    self.verifier_prix()
+
+
+@methode
+def verifier_prix(self):
+    if not self.surveillance:
+        return
+    self.info_prix.config(text="Vérification du prix...", fg=GRIS)
+
+    def ensuite(prix):
+        if not self.surveillance:
+            return
+        heure = time.strftime("%H:%M")
+        if isinstance(prix, Exception):
+            self.info_prix.config(text=f"[{heure}] Page illisible : {prix}", fg=ORANGE)
+        elif prix is None:
+            self.info_prix.config(text=f"[{heure}] Pas de prix trouvé (le site bloque peut-être les lectures automatiques).", fg=ORANGE)
+        elif prix <= self.cible:
+            self.info_prix.config(text=f"[{heure}] 🎉 {prix:.2f} € : prix atteint !", fg=VERT)
+            self.basculer_surveillance()
+            self.info_prix.config(text=f"[{heure}] 🎉 {prix:.2f} € : prix atteint !", fg=VERT)
+            self.racine.bell()
+            self.notifier("Prix atteint 🎉", f"{prix:.2f} € (tu visais {self.cible:.2f} €)", "ok", lambda: self.aller_a("Alerte prix"),
+                          cle=f"prix {time.time()}")
+            return
+        else:
+            self.info_prix.config(text=f"[{heure}] {prix:.2f} € pour l'instant (tu vises {self.cible:.2f} €). "
+                                       f"Prochaine vérification dans {MINUTES_ENTRE_PRIX} min.", fg=TEXTE)
+        self.prochaine_verif = self.racine.after(MINUTES_ENTRE_PRIX * 60 * 1000, self.verifier_prix)
+    self.en_fond(lambda: trouver_prix(self.url), ensuite)
+
+
+# =============================================================
+#  📱 TÉLÉPHONE ET STREAM DECK
+# =============================================================
+
+@methode
+def page_telephone(self, cadre):
+    enregistrer_reglages()   # pour garder le même code PIN
+    onglets = self.sous_pages["Téléphone"] = Onglets(cadre)
+    onglets.pack(fill="both", expand=True)
+
+    # ----- Téléphone -----
+    tel = onglets.ajouter("Téléphone")
+    if self.serveur is None:
+        libelle(tel, f"⚠ Le port {PORT_SERVEUR} est déjà utilisé : la boîte à outils est peut-être déjà ouverte ailleurs.",
+                10, ROUGE).pack(fill="x", pady=(0, 8))
+    libelle(tel, "Ton PC dans ta poche", 13, TEXTE, True).pack(fill="x")
+    libelle(tel, "Depuis le navigateur de ton téléphone : températures en direct, soundboard, profils, musique, micro, "
+                 "veille, verrouillage, extinction.", 9, GRIS, largeur=860).pack(fill="x", pady=(2, 10))
+    for numero, titre, valeur, couleur in (
+            ("1", "Connecte ton téléphone au Wi-Fi de la maison, puis ouvre cette adresse", f"http://{ip_locale()}:{PORT_SERVEUR}", CYAN),
+            ("2", "Entre ton code PIN", " ".join(REGLAGES["pin_telephone"]), ROSE)):
+        bloc = tk.Frame(tel, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, padx=14, pady=10)
+        bloc.pack(fill="x", pady=4)
+        tk.Label(bloc, text=numero, bg=melanger(SURFACE, couleur, 0.25), fg=TEXTE, font=police(12, True), width=3).pack(side="left", padx=(0, 14))
+        textes = tk.Frame(bloc, bg=SURFACE)
+        textes.pack(side="left", fill="x", expand=True)
+        libelle(textes, titre, 9, GRIS, fond=SURFACE).pack(fill="x")
+        libelle(textes, valeur, 20, couleur, True, SURFACE).pack(fill="x")
+    bloc = tk.Frame(tel, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, padx=14, pady=10)
+    bloc.pack(fill="x", pady=4)
+    tk.Label(bloc, text="3", bg=melanger(SURFACE, VIOLET, 0.25), fg=TEXTE, font=police(12, True), width=3).pack(side="left", padx=(0, 14))
+    libelle(bloc, "Dans le menu du navigateur (⋮ ou Partager), choisis « Ajouter à l'écran d'accueil » : tu auras une vraie icône.",
+            10, TEXTE, fond=SURFACE, largeur=760).pack(side="left", fill="x")
+    libelle(tel, "Si Windows demande l'autorisation du pare-feu au premier lancement, coche « Réseaux privés ». "
+                 "Le code PIN empêche les autres appareils du Wi-Fi de piloter ton PC.", 9, GRIS, largeur=860).pack(fill="x", pady=(8, 0))
+
+    # ----- Stream Deck -----
+    sd = onglets.ajouter("Stream Deck")
+    tete = tk.Frame(sd, bg=CARTE)
+    tete.pack(fill="x")
+    libelle(tete, "Plugin Stream Deck", 13, TEXTE, True).pack(side="left")
+    Bouton(tete, "⬇ Installer ou réinstaller le plugin", self.installer_plugin, "principal", petit=True).pack(side="right")
+    self.info_plugin = libelle(sd, "", 10, GRIS, largeur=860)
+    self.info_plugin.pack(fill="x", pady=(2, 10))
+    petit_titre(sd, "Les 5 touches disponibles").pack(fill="x", pady=(0, 4))
+    for nom, detail, couleur in (("Capteur", "Affiche une mesure en direct : température ou charge du processeur, de la carte graphique, mémoire, connexion.", CYAN),
+                                 ("Micro", "Coupe ou réactive ton micro. La touche devient rouge quand il est coupé.", ROSE),
+                                 ("Profil", "Active un profil (Jeu, Travail, Silence).", VIOLET),
+                                 ("Son", "Joue un son de ton soundboard, dans Discord aussi.", VERT),
+                                 ("Musique", "Lecture / pause, morceau suivant ou précédent, volume de la musique.", ORANGE)):
+        ligne = tk.Frame(sd, bg=CARTE)
+        ligne.pack(fill="x", pady=3)
+        tk.Label(ligne, text=nom, bg=melanger(CARTE, couleur, 0.18), fg=couleur, font=police(10, True), width=10, pady=3).pack(side="left", padx=(0, 12))
+        libelle(ligne, detail, 10, TEXTE, largeur=720).pack(side="left", fill="x")
+    libelle(sd, "Dans le logiciel Stream Deck, ces touches sont dans la catégorie « Capteurs de Crz » (colonne de droite) : "
+                "glisse-les sur ton Stream Deck. Le profil « Perfs » est livré avec le plugin.", 9, GRIS, largeur=860).pack(fill="x", pady=(10, 0))
+
+    # ----- Allumer à distance -----
+    wol = onglets.ajouter("Allumer à distance")
+    libelle(wol, "Allumer le PC depuis ton téléphone (Wake-on-LAN)", 13, TEXTE, True).pack(fill="x")
+    libelle(wol, "Un PC éteint ne peut pas répondre lui-même : c'est une appli « Wake On LAN » sur ton téléphone qui lui envoie "
+                 "un signal de réveil par le câble réseau. Il faut l'adresse de ta carte réseau (adresse MAC) :", 9, GRIS,
+            largeur=860).pack(fill="x", pady=(2, 8))
+    self.info_mac = libelle(wol, "Recherche de ta carte réseau...", 12, TEXTE, True)
+    self.info_mac.pack(fill="x", pady=(0, 10))
+    petit_titre(wol, "À régler une seule fois").pack(fill="x", pady=(0, 4))
+    for etape in ("BIOS de la carte mère MSI (touche Suppr au démarrage) : Settings > Advanced > Wake Up Event Setup > "
+                  "« Resume By PCI-E Device » sur Enabled, et « ErP Ready » sur Disabled.",
+                  "Windows : Gestionnaire de périphériques > Cartes réseau > ta carte > Gestion de l'alimentation : coche "
+                  "« Autoriser ce périphérique à sortir l'ordinateur du mode veille » et « paquet magique ».",
+                  "Windows : désactive le « démarrage rapide » (Options d'alimentation > Choisir l'action des boutons d'alimentation).",
+                  "Téléphone : installe une appli « Wake On LAN », ajoute ton PC avec l'adresse MAC ci-dessus. "
+                  "Le PC doit être branché en câble Ethernet (pas en Wi-Fi)."):
+        ligne = tk.Frame(wol, bg=CARTE)
+        ligne.pack(fill="x", pady=3)
+        tk.Label(ligne, text="•", bg=CARTE, fg=ACCENT, font=police(11, True)).pack(side="left", anchor="n", padx=(0, 8))
+        libelle(ligne, etape, 10, TEXTE, largeur=820).pack(side="left", fill="x")
+
+    def ensuite(cartes):
+        if isinstance(cartes, Exception) or not cartes:
+            self.info_mac.config(text="Adresse MAC introuvable (tape « getmac » dans PowerShell pour la voir).", fg=GRIS)
+        else:
+            self.info_mac.config(text="   ·   ".join(f"{nom[:44]} : {mac}" for nom, mac in cartes), fg=VERT)
+    self.en_fond(adresses_mac, ensuite)
+    onglets.quand_change = lambda nom: nom == "Stream Deck" and self.afficher_plugin()
+    self.racine.after(12000, self.afficher_plugin)
+
+
+@methode
+def afficher_plugin(self):
+    version = None
+    try:
+        version = json.loads((DOSSIER_PLUGIN / "manifest.json").read_text(encoding="utf-8")).get("Version")
+    except (OSError, ValueError):
+        pass
+    if version and time.time() - getattr(self, "dernier_appel_local", 0) < 20:
+        self.info_plugin.config(text=f"✓ Installé (version {version}) et connecté à la boîte à outils.", fg=VERT)
+    elif version:
+        self.info_plugin.config(text=f"Installé (version {version}), mais il ne demande rien en ce moment : le logiciel Stream Deck est peut-être fermé.", fg=ORANGE)
+    else:
+        self.info_plugin.config(text="Pas encore installé sur ce PC. Clique sur le bouton, puis accepte l'installation dans le logiciel Stream Deck.", fg=GRIS)
+
+
+@methode
+def installer_plugin(self):
+    self.info_plugin.config(text="Téléchargement du plugin...", fg=GRIS)
+
+    def travail():
+        fichier = DOSSIER_APPLI / "com.crz.capteurs.streamDeckPlugin"
+        DOSSIER_APPLI.mkdir(parents=True, exist_ok=True)
+        fichier.write_bytes(telecharger("com.crz.capteurs.streamDeckPlugin"))
+        os.startfile(fichier)   # le logiciel Stream Deck propose de l'installer
+        return True
+
+    def ensuite(res):
+        if isinstance(res, Exception):
+            self.info_plugin.config(text=f"Téléchargement impossible ({res}). Vérifie ta connexion et réessaie.", fg=ORANGE)
+        else:
+            self.info_plugin.config(text="Téléchargé : le logiciel Stream Deck s'ouvre pour te proposer l'installation.", fg=VERT)
+    self.en_fond(travail, ensuite)
+
+
+# =============================================================
+#  ⚙ RÉGLAGES
+# =============================================================
+
+@methode
+def page_reglages(self, cadre):
+    onglets = self.sous_pages["Réglages"] = Onglets(cadre)
+    onglets.pack(fill="both", expand=True)
+    self.champs_reglages = {}   # clé du réglage -> (sorte, widget)
+
+    def ligne(parent, cle, sorte, titre, aide="", choix=None):
+        """Une ligne de réglage : le titre et son explication à gauche, la commande à droite."""
+        l = tk.Frame(parent, bg=CARTE)
+        l.pack(fill="x", pady=6)
+        valeur = REGLAGES.get(cle, REGLAGES_DEFAUT.get(cle))
+        if sorte == "oui_non":
+            w = Interrupteur(l, valeur)
+            w.pack(side="right", padx=(12, 0))
+        elif sorte == "choix":
+            w = ttk.Combobox(l, values=choix, state="readonly", width=34)
+            w.set(valeur if valeur in choix else choix[0])
+            w.pack(side="right", padx=(12, 0))
+        else:
+            if sorte == "dossier":
+                def choisir():
+                    choisi = filedialog.askdirectory(initialdir=w.get() or str(Path.home()))
+                    if choisi:
+                        w.delete(0, "end")
+                        w.insert(0, str(Path(choisi)))
+                Bouton(l, "📁", choisir, petit=True).pack(side="right", padx=(6, 0))
+            w = champ(l, {"nombre": 8, "dossier": 34, "liste": 34}[sorte],
+                      valeur=", ".join(valeur) if isinstance(valeur, list) else valeur)
+            w.pack(side="right", padx=(12, 0), ipady=4)
+        textes = tk.Frame(l, bg=CARTE)
+        textes.pack(side="left", fill="x", expand=True)
+        libelle(textes, titre, 10, TEXTE, True).pack(fill="x")
+        if aide:
+            libelle(textes, aide, 9, GRIS, largeur=470).pack(fill="x")
+        self.champs_reglages[cle] = (sorte, w)
+
+    def barre_enregistrer(parent):
+        bas = tk.Frame(parent, bg=CARTE)
+        bas.pack(fill="x", side="bottom", pady=(10, 0))
+        Bouton(bas, "💾 Enregistrer", self.sauver_reglages, "principal").pack(side="left")
+        libelle(bas, "Les changements ne sont pris en compte qu'après « Enregistrer ».", 9, GRIS).pack(side="left", padx=12)
+
+    general = onglets.ajouter("Général")
+    barre_enregistrer(general)
+    ligne(general, "fermer_vers_icone", "oui_non", "La croix range la fenêtre près de l'horloge",
+          "La boîte à outils continue de tourner (temps de jeu, alertes, Stream Deck). Pour vraiment quitter : clic droit sur l'icône.")
+    ligne(general, "demarrage_windows", "oui_non", "Lancer au démarrage de Windows", "Elle démarre discrètement, rangée près de l'horloge.")
+    ligne(general, "maj_auto", "oui_non", "Installer les mises à jour toute seule", "Vérifié au lancement. Sinon, un bouton apparaît en haut quand une version sort.")
+    ligne(general, "accent", "choix", "Couleur des boutons", "Appliquée au prochain lancement.", list(COULEURS_ACCENT))
+    ligne(general, "dossier_a_ranger", "dossier", "Dossier à ranger", "Utilisé par Entretien > Ranger.")
+    ligne(general, "dossier_medal", "dossier", "Dossier des clips Medal", "Utilisé par Entretien > Nettoyer.")
+    ligne(general, "jours_clips", "nombre", "Garder les clips Medal pendant (jours)", "Les clips plus vieux sont proposés au nettoyage.")
+    ligne(general, "verrou_minutes", "nombre", "Verrouiller le coffre-fort après (minutes)", "Sans rien toucher, le coffre se referme tout seul.")
+    ligne(general, "minutes_entre_prix", "nombre", "Alerte prix : vérifier toutes les (minutes)")
+
+    alertes = onglets.ajouter("Alertes")
+    barre_enregistrer(alertes)
+    ligne(alertes, "notifications", "oui_non", "Notifications Windows",
+          "Une bulle près de l'horloge quand la fenêtre n'est pas devant toi : surchauffe, ventilateur arrêté, disque plein, fin de partie.")
+    ligne(alertes, "alerte_cpu", "nombre", "Alerte température du processeur (°C)", "Ton i5-13600KF supporte jusqu'à 100 °C. Conseillé : 90.")
+    ligne(alertes, "alerte_gpu", "nombre", "Alerte température de la carte graphique (°C)", "Conseillé pour ta RTX 4070 Ti : 83.")
+    ligne(alertes, "alerte_disque", "nombre", "Signaler un disque rempli à plus de (%)", "Un SSD trop plein ralentit. Conseillé : 90.")
+    libelle(alertes, "Une alerte ne part que si le souci dure une dizaine de secondes, et jamais deux fois de suite pour la même chose.",
+            9, GRIS, largeur=860).pack(fill="x", pady=(10, 0))
+
+    jeux = onglets.ajouter("Jeux")
+    barre_enregistrer(jeux)
+    petit_titre(jeux, "Session gaming (bouton « Lancer la session »)").pack(fill="x", pady=(0, 2))
+    ligne(jeux, "mode_performances", "oui_non", "Passer en mode Performances pendant la session", "Le plan d'alimentation d'avant revient à la fin.")
+    ligne(jeux, "apps_a_fermer", "liste", "Applis à fermer pour jouer", "Séparées par des virgules. Elles sont relancées à la fin.")
+    petit_titre(jeux, "Profil automatique").pack(fill="x", pady=(14, 2))
+    ligne(jeux, "auto_profil", "oui_non", "Changer de profil tout seul quand un jeu démarre",
+          "Le profil choisi s'active (sans ouvrir d'appli), et le profil d'avant revient quand tu quittes le jeu.")
+    ligne(jeux, "profil_en_jeu", "choix", "Profil à activer en jeu", "", list(REGLAGES.get("profils", {})) or ["Jeu"])
+
+    micro_ = onglets.ajouter("Micro")
+    barre_enregistrer(micro_)
+    libelle(micro_, "Quel micro le bouton Micro doit-il couper ?", 12, TEXTE, True).pack(fill="x")
+    libelle(micro_, "Par défaut, c'est le micro principal de Windows. Si tu passes par Voicemeeter, choisis le même micro que le "
+                    "« Périphérique d'entrée » de Discord.", 9, GRIS, largeur=860).pack(fill="x", pady=(2, 10))
+    self.choix_micro = ttk.Combobox(micro_, state="readonly", width=56, values=["Micro par défaut de Windows"])
+    self.choix_micro.set(REGLAGES.get("micro_nom") or "Micro par défaut de Windows")
+    self.choix_micro.pack(anchor="w")
+    libelle(micro_, "Bon à savoir : ton casque HyperX ignore le « muet » de Windows, donc la boîte à outils coupe le micro en mettant "
+                    "son volume à zéro, puis remet le volume d'avant. Elle ne touche jamais au son que tu entends dans le casque.",
+            9, GRIS, largeur=860).pack(fill="x", pady=(12, 0))
+
+    def remplir_micros(micros):
+        if not isinstance(micros, Exception) and micros:
+            self.choix_micro.config(values=["Micro par défaut de Windows"] + [nom for nom, _ in micros])
+    self.en_fond(lister_micros, remplir_micros)
+
+    apropos = onglets.ajouter("À propos")
+    libelle(apropos, f"Boîte à outils de Crz · version {VERSION}", 14, TEXTE, True).pack(fill="x")
+    libelle(apropos, "Faite en Python avec tkinter, la librairie de fenêtres livrée avec Python. Tout le code est dans un seul "
+                     "fichier, commenté en français : ouvre-le pour voir comment c'est fait.", 10, GRIS, largeur=860).pack(fill="x", pady=(4, 12))
+    boutons = tk.Frame(apropos, bg=CARTE)
+    boutons.pack(fill="x")
+    Bouton(boutons, "✨ Quoi de neuf", self.quoi_de_neuf).pack(side="left", padx=(0, 8))
+    Bouton(boutons, "⬇ Chercher une mise à jour", lambda: self.verifier_maj_appli(a_la_main=True)).pack(side="left", padx=(0, 8))
+    Bouton(boutons, "🩺 Diagnostic", lambda: self.aller_a("Santé du PC", "Diagnostic")).pack(side="left", padx=(0, 8))
+    Bouton(boutons, "📁 Ouvrir le dossier des données", self.ouvrir_dossier_appli).pack(side="left")
+    petit_titre(apropos, "Où sont rangées tes données").pack(fill="x", pady=(18, 4))
+    for nom, chemin in (("Réglages, statistiques, journal", DOSSIER_APPLI), ("Coffre-fort (chiffré)", FICHIER_COFFRE.parent),
+                        ("Ce programme", Path(__file__).resolve())):
+        l = tk.Frame(apropos, bg=CARTE)
+        l.pack(fill="x", pady=2)
+        libelle(l, nom, 10, TEXTE, width=30).pack(side="left")
+        libelle(l, str(chemin), 10, GRIS).pack(side="left")
+    petit_titre(apropos, "Raccourcis").pack(fill="x", pady=(18, 4))
+    libelle(apropos, "Ctrl+K : recherche rapide   ·   Échap : fermer un panneau   ·   double-clic sur la mini-fenêtre : rouvrir la boîte à outils",
+            10, GRIS).pack(fill="x")
+
+
+@methode
+def sauver_reglages(self):
+    nouveaux = {}
+    limites = {"alerte_cpu": (50, 105), "alerte_gpu": (50, 100), "alerte_disque": (50, 99)}
+    for cle, (sorte, w) in self.champs_reglages.items():
+        if sorte == "oui_non":
+            nouveaux[cle] = w.get()
+        elif sorte == "choix":
+            nouveaux[cle] = w.get()
+        elif sorte == "liste":
+            nouveaux[cle] = [a.strip() for a in w.get().split(",") if a.strip()]
+        elif sorte == "dossier":
+            nouveaux[cle] = w.get().strip()
+        else:
+            valeur = w.get().strip()
+            mini, maxi = limites.get(cle, (1, 100000))
+            if not valeur.isdigit() or not mini <= int(valeur) <= maxi:
+                self.toast(f"« {valeur} » n'est pas valable ici (attendu : un nombre entre {mini} et {maxi})", "alerte")
+                w.focus_set()
+                return
+            nouveaux[cle] = int(valeur)
+    micro_choisi = self.choix_micro.get()
+    nouveaux["micro_nom"] = "" if micro_choisi.startswith("Micro par défaut") else micro_choisi
+    try:
+        if nouveaux["demarrage_windows"] != REGLAGES["demarrage_windows"] or nouveaux["demarrage_windows"]:
+            regler_demarrage(nouveaux["demarrage_windows"])
+    except OSError as e:
+        self.toast(f"Lancement au démarrage impossible à régler : {e}", "alerte")
+        return
+    if nouveaux["fermer_vers_icone"] and not REGLAGES["fermer_vers_icone"]:
+        self.creer_icone()
+    changement_micro = nouveaux["micro_nom"] != REGLAGES.get("micro_nom", "")
+    changement_accent = nouveaux["accent"] != REGLAGES.get("accent", "Cyan")
+    REGLAGES.update(nouveaux)
+    enregistrer_reglages()
+    if changement_micro:
+        SON["verifie"] = 0   # le fil du son reprendra le nouveau micro au prochain relevé
+    # On met à jour ce qui est affiché dans les autres pages
+    self.construire_zones()
+    self.btn_nettoyer.activer(False)
+    self.info_dossier_rangeur.config(text=f"Dossier à ranger : {DOSSIER_A_RANGER}")
+    self.dessiner_etapes()
+    self.dessiner_profils()
+    self.dessiner_graphique()
+    self.toast("Réglages enregistrés" + (" · la nouvelle couleur sera là au prochain lancement" if changement_accent else ""))
+
+
+# =============================================================
+#  🔐 COFFRE-FORT  -  l'affichage
+#  (le chiffrement lui-même est plus haut : chiffrer, dechiffrer...)
+# =============================================================
+
+class Coffre:
+    """La page du coffre-fort. Deux écrans : verrouillé (on tape le mot de passe maître) ou ouvert (la liste)."""
+
+    def __init__(self, cadre, racine):
+        self.cadre = cadre
+        self.racine = racine
+        self.mdp_maitre = None
+        self.entrees = []          # liste de dictionnaires {site, identifiant, mdp, note}
+        self.minuteur_verrou = None
+        self.minuteur_presse_papier = None
+        # Chaque clic ou touche remet à zéro le compte à rebours du verrouillage
+        racine.bind_all("<Any-KeyPress>", self.activite, add="+")
+        racine.bind_all("<Any-Button>", self.activite, add="+")
+        self.ecran_verrouille()
+
+    def dire(self, texte, couleur=GRIS):
+        """Écrit un message dans la ligne d'information en bas du coffre."""
+        if getattr(self, "info", None) is not None and self.info.winfo_exists():
+            self.info.config(text=texte, fg=couleur)
+
+    # ---------- ÉCRAN VERROUILLÉ ----------
+
+    def ecran_verrouille(self):
+        vider(self.cadre)
+        self.mdp_maitre = None
+        self.entrees = []
+        self.info = None
+        premiere_fois = not FICHIER_COFFRE.exists()
+
+        boite = tk.Frame(self.cadre, bg=CARTE)
+        boite.place(relx=0.5, rely=0.45, anchor="center")
+        tk.Label(boite, text="🔐", bg=CARTE, fg=TEXTE, font=police(30)).pack()
+        libelle(boite, "Crée ton mot de passe maître" if premiere_fois else "Coffre verrouillé", 14, TEXTE, True).pack(pady=(0, 2))
+        libelle(boite, "C'est le seul mot de passe à retenir : il ouvre tous les autres." if premiere_fois
+                else "Tape ton mot de passe maître pour voir tes mots de passe.", 9, GRIS).pack(pady=(0, 10))
+
+        self.champ_maitre = champ(boite, 30, cache=True)
+        self.champ_maitre.pack(ipady=6, pady=3)
+        self.champ_maitre.bind("<Return>", lambda e: self.deverrouiller())
+        self.champ_confirm = None
+        if premiere_fois:
+            libelle(boite, "Écris-le une deuxième fois :", 9, GRIS).pack(pady=(6, 0))
+            self.champ_confirm = champ(boite, 30, cache=True)
+            self.champ_confirm.pack(ipady=6, pady=3)
+            self.champ_confirm.bind("<Return>", lambda e: self.deverrouiller())
+            tk.Label(boite, text="Si tu l'oublies, personne ne pourra ouvrir le coffre.\n"
+                                 "Choisis une phrase longue que tu retiens facilement (10 caractères minimum).",
+                     bg=CARTE, fg=ORANGE, font=police(9), justify="center").pack(pady=6)
+
+        self.info_verrou = tk.Label(boite, text="", bg=CARTE, fg=ROUGE, font=police(10))
+        self.info_verrou.pack(pady=3)
+        Bouton(boite, "Créer le coffre" if premiere_fois else "Déverrouiller", self.deverrouiller, "principal").pack(pady=(2, 0))
+        libelle(boite, f"Le coffre se referme tout seul après {VERROU_MINUTES} min sans rien toucher, "
+                       "et dès que la fenêtre est cachée.", 8, ETEINT).pack(pady=(14, 0))
+
+    def deverrouiller(self):
+        if AESGCM is None and not charger_crypto():
+            if messagebox.askyesno("Coffre-fort", "Il manque la librairie « cryptography » pour chiffrer.\n\n"
+                                                  "L'installer maintenant ? (environ 30 secondes)"):
+                self.info_verrou.config(text="Installation...", fg=GRIS)
+                self.racine.update()
+                if installer_crypto() and charger_crypto():
+                    self.info_verrou.config(text="Installé", fg=VERT)
+                else:
+                    self.info_verrou.config(text="Échec. Dans PowerShell : python -m pip install cryptography", fg=ROUGE)
+                    return
+            else:
+                return
+
+        mdp = self.champ_maitre.get()
+        if self.champ_confirm is not None:   # création du coffre
+            if len(mdp) < 10:
+                self.info_verrou.config(text="Au moins 10 caractères, s'il te plaît.", fg=ROUGE)
+                return
+            if mdp != self.champ_confirm.get():
+                self.info_verrou.config(text="Les deux mots de passe ne sont pas pareils.", fg=ROUGE)
+                return
+            sauvegarder_coffre([], mdp)
+            self.entrees = []
+        else:
+            self.info_verrou.config(text="Ouverture...", fg=GRIS)
+            self.racine.update()
+            try:
+                self.entrees = dechiffrer(FICHIER_COFFRE.read_bytes(), mdp)
+            except InvalidTag:
+                self.info_verrou.config(text="Mauvais mot de passe.", fg=ROUGE)
+                self.champ_maitre.delete(0, "end")
+                return
+            except Exception as e:
+                self.info_verrou.config(text=f"Coffre illisible : {e}", fg=ROUGE)
+                return
+        self.mdp_maitre = mdp
+        self.ecran_principal()
+        self.activite()
+
+    # ---------- VERROUILLAGE AUTO ----------
+
+    def activite(self, _evenement=None):
+        if self.mdp_maitre is None:
+            return
+        if self.minuteur_verrou:
+            self.racine.after_cancel(self.minuteur_verrou)
+        self.minuteur_verrou = self.racine.after(VERROU_MINUTES * 60 * 1000, self.verrouiller)
+
+    def verrouiller(self):
+        fenetre = getattr(self, "fenetre", None)   # ferme la fenêtre d'édition restée ouverte
+        if fenetre is not None and fenetre.winfo_exists():
+            fenetre.destroy()
+        self.ecran_verrouille()
+
+    # ---------- COFFRE OUVERT ----------
+
+    def ecran_principal(self):
+        vider(self.cadre)
+        haut = tk.Frame(self.cadre, bg=CARTE)
+        haut.pack(fill="x", pady=(0, 10))
+        libelle(haut, "Chercher", 9, GRIS).pack(side="left")
+        self.recherche = tk.StringVar()
+        self.recherche.trace_add("write", lambda *a: self.rafraichir())
+        zone = champ(haut, 26)
+        zone.config(textvariable=self.recherche)
+        zone.pack(side="left", ipady=5, padx=8)
+        self.compte = libelle(haut, "", 9, GRIS)
+        self.compte.pack(side="left", padx=6)
+        Bouton(haut, "Verrouiller", self.verrouiller, "danger", petit=True).pack(side="right")
+
+        self.liste = ttk.Treeview(self.cadre, columns=("site", "identifiant", "note"), show="headings", height=8)
+        for col, titre, larg in [("site", "Site ou appli", 220), ("identifiant", "Identifiant", 260), ("note", "Note", 260)]:
+            self.liste.heading(col, text=titre, anchor="w")
+            self.liste.column(col, width=larg, anchor="w")
+        self.liste.pack(fill="both", expand=True)
+        self.liste.bind("<Double-1>", lambda e: self.copier("mdp"))
+
+        bas = tk.Frame(self.cadre, bg=CARTE)
+        bas.pack(fill="x", pady=(10, 0))
+        Bouton(bas, "+ Ajouter", lambda: self.fenetre_edition(None), "succes").pack(side="left", padx=(0, 6))
+        Bouton(bas, "Copier le mot de passe", lambda: self.copier("mdp"), "principal").pack(side="left", padx=(0, 6))
+        Bouton(bas, "Copier l'identifiant", lambda: self.copier("identifiant")).pack(side="left", padx=(0, 6))
+        Bouton(bas, "Modifier", self.modifier).pack(side="left", padx=(0, 6))
+        Bouton(bas, "Supprimer", self.supprimer).pack(side="right")
+        self.info = libelle(self.cadre, "", 9, GRIS)
+        self.info.pack(fill="x", pady=(8, 0))
+        self.rafraichir()
+        self.dire("Astuce : double-clic sur une ligne pour copier son mot de passe." if self.entrees
+                  else "Ton coffre est vide. Clique sur « + Ajouter » pour ranger ton premier mot de passe.")
+
+    def rafraichir(self):
+        """Réaffiche la liste en tenant compte de la recherche."""
+        self.liste.delete(*self.liste.get_children())
+        filtre = sans_accents(self.recherche.get())
+        montres = 0
+        for i, e in sorted(enumerate(self.entrees), key=lambda x: x[1]["site"].lower()):
+            if filtre in sans_accents(e["site"]) or filtre in sans_accents(e["identifiant"]) or filtre in sans_accents(e.get("note", "")):
+                self.liste.insert("", "end", iid=str(i), values=(e["site"], e["identifiant"], e.get("note", "")))
+                montres += 1
+        total = len(self.entrees)
+        if filtre:
+            self.compte.config(text=f"{montres} sur {total}")
+        else:
+            self.compte.config(text=f"{total} mot{'s' if total > 1 else ''} de passe")
+
+    def selection(self):
+        choix = self.liste.selection()
+        if not choix:
+            self.dire("Sélectionne d'abord une ligne dans la liste.", ORANGE)
+            return None
+        return int(choix[0])
+
+    def enregistrer(self):
+        sauvegarder_coffre(self.entrees, self.mdp_maitre)
+        self.rafraichir()
+
+    def copier(self, quoi):
+        i = self.selection()
+        if i is None:
+            return
+        self.racine.clipboard_clear()
+        self.racine.clipboard_append(self.entrees[i][quoi])
+        if quoi == "mdp":
+            self.dire(f"Mot de passe de « {self.entrees[i]['site']} » copié. Il sera effacé du presse-papier dans "
+                      f"{EFFACER_PRESSE_PAPIER} s.", VERT)
+            if self.minuteur_presse_papier:
+                self.racine.after_cancel(self.minuteur_presse_papier)
+            self.minuteur_presse_papier = self.racine.after(EFFACER_PRESSE_PAPIER * 1000, self.effacer_presse_papier)
+        else:
+            self.dire("Identifiant copié.", VERT)
+
+    def effacer_presse_papier(self):
+        self.minuteur_presse_papier = None
+        self.racine.clipboard_clear()
+        self.racine.clipboard_append("")
+        if self.mdp_maitre:
+            self.dire("Presse-papier effacé.")
+
+    def supprimer(self):
+        i = self.selection()
+        if i is None:
+            return
+        if messagebox.askyesno("Supprimer", f"Supprimer « {self.entrees[i]['site']} » du coffre ?\n\nC'est définitif."):
+            del self.entrees[i]
+            self.enregistrer()
+            self.dire("Supprimé.")
+
+    def modifier(self):
+        i = self.selection()
+        if i is not None:
+            self.fenetre_edition(i)
+
+    def fenetre_edition(self, index):
+        """Petite fenêtre pour ajouter (index=None) ou modifier une entrée."""
+        e = self.entrees[index] if index is not None else {"site": "", "identifiant": "", "mdp": "", "note": ""}
+        self.fenetre = f = tk.Toplevel(self.racine, bg=CARTE, padx=22, pady=18)
+        f.title("Modifier" if index is not None else "Ajouter un mot de passe")
+        f.transient(self.racine)
+        f.resizable(False, False)
+        f.grab_set()   # on ne peut pas cliquer ailleurs tant qu'elle est ouverte
+
+        champs = {}
+        for ligne, (cle, titre) in enumerate([("site", "Site ou appli"), ("identifiant", "Identifiant ou e-mail"),
+                                              ("mdp", "Mot de passe"), ("note", "Note (facultatif)")]):
+            libelle(f, titre, 10, GRIS).grid(row=ligne, column=0, sticky="w", pady=6)
+            c = champ(f, 30, cache=(cle == "mdp"), valeur=e.get(cle, ""))
+            c.grid(row=ligne, column=1, ipady=5, padx=10)
+            champs[cle] = c
+
+        def basculer_affichage():
+            cache = not champs["mdp"].cget("show")
+            champs["mdp"].config(show="•" if cache else "")
+            oeil.changer("Afficher" if cache else "Cacher")
+
+        def generer():
+            champs["mdp"].delete(0, "end")
+            champs["mdp"].insert(0, generer_mdp())
+            champs["mdp"].config(show="")
+            oeil.changer("Cacher")
+
+        outils = tk.Frame(f, bg=CARTE)
+        outils.grid(row=2, column=2, sticky="w")
+        oeil = Bouton(outils, "Afficher", basculer_affichage, petit=True)
+        oeil.pack(side="left", padx=(0, 6))
+        Bouton(outils, "Générer", generer, petit=True).pack(side="left")
+        libelle(f, "« Générer » invente un mot de passe solide de 20 caractères.", 9, GRIS).grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        erreur = libelle(f, "", 9, ROUGE)
+        erreur.grid(row=5, column=0, columnspan=3, sticky="w")
+
+        def valider(_evt=None):
+            nouveau = {cle: c.get().strip() for cle, c in champs.items()}
+            nouveau["mdp"] = champs["mdp"].get()   # on ne retire pas les espaces d'un mdp
+            if not nouveau["site"] or not nouveau["mdp"]:
+                erreur.config(text="Il faut au moins un site et un mot de passe.")
+                return
+            if index is None:
+                self.entrees.append(nouveau)
+            else:
+                self.entrees[index] = nouveau
+            self.enregistrer()
+            self.dire(f"« {nouveau['site']} » enregistré (chiffré).", VERT)
+            f.destroy()
+
+        bas = tk.Frame(f, bg=CARTE)
+        bas.grid(row=6, column=0, columnspan=3, sticky="e", pady=(12, 0))
+        Bouton(bas, "Annuler", f.destroy).pack(side="left", padx=(0, 8))
+        Bouton(bas, "Enregistrer", valider, "succes").pack(side="left")
+        f.bind("<Return>", valider)
+        f.bind("<Escape>", lambda e: f.destroy())
+        champs["site"].focus_set()
+
+
+# =============================================================
+#  📡 LE PETIT SERVEUR
+#  Il répond au téléphone (avec le PIN) et au Stream Deck (sans PIN,
+#  parce qu'il est sur le PC lui-même). Il tourne dans son propre fil :
+#  il ne touche jamais à l'affichage, il dépose ses demandes dans la file.
+# =============================================================
 
 class ServeurLocal(http.server.BaseHTTPRequestHandler):
     app = None   # la boîte à outils, remplie au démarrage
@@ -3997,11 +5908,12 @@ class ServeurLocal(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):   # pas de messages dans la console
         pass
 
+    def local(self):
+        return self.client_address[0] in ("127.0.0.1", "::1")
+
     def autorise(self):
         """Le PC lui-même (Stream Deck) n'a pas besoin du PIN, le téléphone oui."""
-        if self.client_address[0] in ("127.0.0.1", "::1"):
-            return True
-        return self.headers.get("X-Pin") == REGLAGES["pin_telephone"]
+        return self.local() or self.headers.get("X-Pin") == REGLAGES["pin_telephone"]
 
     def repondre(self, code, donnees, type_contenu="application/json; charset=utf-8"):
         corps = donnees if isinstance(donnees, bytes) else json.dumps(donnees, ensure_ascii=False).encode("utf-8")
@@ -4023,6 +5935,8 @@ class ServeurLocal(http.server.BaseHTTPRequestHandler):
             self.repondre(401, {"erreur": "PIN"})
             return
         if self.path == "/api/etat":
+            if self.local():
+                self.app.dernier_appel_local = time.time()   # le Stream Deck vient de passer : il est bien relié
             self.repondre(200, self.app.etat_pour_api())
         elif self.path == "/api/sons":
             self.repondre(200, [{"id": s["id"], "nom": s["nom"], "couleur": s.get("couleur", CYAN)}
@@ -4057,8 +5971,9 @@ class ServeurLocal(http.server.BaseHTTPRequestHandler):
         elif quoi == "profil" and valeur in REGLAGES["profils"]:
             self.app.file_icone.put(("profil", valeur))   # la fenêtre s'en occupe (elle seule touche à l'affichage)
             self.repondre(200, {"ok": True})
-        elif quoi == "fenetre" and valeur == "montrer" and self.client_address[0] in ("127.0.0.1", "::1"):
-            self.app.file_icone.put("ouvrir")   # une 2e boîte à outils a été lancée : on montre la 1re
+        elif quoi == "fenetre" and valeur in ("montrer", "rien") and self.local():
+            if valeur == "montrer":
+                self.app.file_icone.put("ouvrir")   # une 2e boîte à outils a été lancée : on montre la 1re
             self.repondre(200, {"ok": True})
         elif quoi == "pc" and valeur in ("veille", "verrouiller", "eteindre", "redemarrer"):
             self.repondre(200, {"ok": True})
@@ -4067,32 +5982,25 @@ class ServeurLocal(http.server.BaseHTTPRequestHandler):
             self.repondre(400, {"erreur": "action inconnue"})
 
 
-def action_pc(action):
-    import ctypes
-    if action == "verrouiller":
-        ctypes.windll.user32.LockWorkStation()
-    elif action == "veille":
-        # SetSuspendState(hibernation=False) = vraie mise en veille
-        ctypes.windll.powrprof.SetSuspendState(False, False, False)
-    elif action == "eteindre":
-        subprocess.run(["shutdown", "/s", "/t", "10"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    elif action == "redemarrer":
-        subprocess.run(["shutdown", "/r", "/t", "10"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-
-
+@methode
 def demarrer_serveur(self):
     ServeurLocal.app = self
+    self.dernier_appel_local = 0
     try:
         self.serveur = http.server.ThreadingHTTPServer(("0.0.0.0", PORT_SERVEUR), ServeurLocal)
     except OSError:
         self.serveur = None   # port déjà pris (boîte à outils déjà ouverte ?)
         return
-    threading.Thread(target=self.serveur.serve_forever, daemon=True).start()
+    self.serveur.daemon_threads = True
+    threading.Thread(target=self.serveur.serve_forever, daemon=True, name="serveur").start()
 
 
+@methode
 def etat_pour_api(self):
+    """Ce que le téléphone et le Stream Deck reçoivent quand ils demandent « comment va le PC ? »."""
     m = getattr(self, "dernieres_mesures", {}) or {}
     return {
+        "version": VERSION,
         "cpu_temp": m.get("cpu_temp"), "cpu_usage": m.get("cpu_usage"),
         "gpu": m.get("gpu"), "ram": m.get("ram"), "reseau": getattr(self, "derniere_vitesse", None),
         "jeu": getattr(self, "jeu_actuel", None), "profil": REGLAGES.get("profil_actif"),
@@ -4102,63 +6010,79 @@ def etat_pour_api(self):
     }
 
 
-def onglet_telephone(self, cadre):
-    enregistrer_reglages()   # pour garder le même code PIN
-    self.texte(cadre, "Ton téléphone", 13, gras=True)
-    if self.serveur is None:
-        self.texte(cadre, f"⚠️ Le port {PORT_SERVEUR} est déjà utilisé : la boîte à outils est peut-être déjà ouverte.",
-                   10, ROUGE)
-    adresse = f"http://{ip_locale()}:{PORT_SERVEUR}"
-    carte = Carte(cadre, couleur=FOND)
-    carte.pack(fill="x", pady=8)
-    tk.Label(carte, text="1. CONNECTE TON TÉLÉPHONE AU WI-FI DE LA MAISON, PUIS OUVRE :", bg=FOND, fg=GRIS,
-             font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x")
-    tk.Label(carte, text=adresse, bg=FOND, fg=CYAN, font=("Segoe UI", 22, "bold"), anchor="w").pack(fill="x")
-    tk.Label(carte, text="2. TON CODE PIN :", bg=FOND, fg=GRIS, font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", pady=(8, 0))
-    tk.Label(carte, text=" ".join(REGLAGES["pin_telephone"]), bg=FOND, fg=ROSE, font=("Segoe UI", 22, "bold"),
-             anchor="w").pack(fill="x")
-    tk.Label(carte, text="3. Dans le navigateur du téléphone : Partager / ⋮ > « Ajouter à l'écran d'accueil » pour avoir une vraie icône.",
-             bg=FOND, fg=GRIS, font=("Segoe UI", 9), anchor="w").pack(fill="x", pady=(8, 0))
-    self.texte(cadre, "Sur le téléphone : températures en direct, soundboard, profils, veille, verrouiller, éteindre.", 10)
-    self.texte(cadre, "Si Windows demande l'autorisation du pare-feu au premier lancement, coche « Réseaux privés ».", 9, GRIS)
+# =============================================================
+#  ▶️ LE DÉMARRAGE
+#  Tout ce qui est au-dessus ne fait que DÉFINIR des outils.
+#  C'est ici que le programme commence vraiment.
+# =============================================================
 
-    self.texte(cadre, "Allumer le PC à distance (Wake-on-LAN)", 12, gras=True).pack_configure(pady=(14, 2))
-    self.info_mac = self.texte(cadre, "Recherche de ta carte réseau...", 10)
-    self.texte(cadre, "Quand le PC est éteint, il ne peut pas répondre lui-même : c'est une appli « Wake On LAN » sur ton "
-                      "téléphone (ou ta box) qui le réveille avec l'adresse MAC ci-dessus. Je te guide ce soir pour les "
-                      "réglages du BIOS MSI et de Windows.", 9, GRIS).config(wraplength=780)
-
-    def ensuite(cartes):
-        if isinstance(cartes, Exception) or not cartes:
-            self.info_mac.config(text="Adresse MAC : introuvable (lance « getmac » dans PowerShell)")
-        else:
-            self.info_mac.config(text="   ".join(f"{nom[:40]} : {mac}" for nom, mac in cartes), fg=VERT)
-    self.en_fond(adresses_mac, ensuite)
+def deja_ouverte():
+    """True si une boîte à outils tourne déjà (dans ce cas on lui demande de montrer sa fenêtre)."""
+    try:
+        action = "rien" if "--cache" in sys.argv else "montrer"
+        requete = urllib.request.Request(f"http://127.0.0.1:{PORT_SERVEUR}/api/fenetre/{action}", method="POST")
+        urllib.request.urlopen(requete, timeout=2)
+        return True
+    except urllib.error.HTTPError:
+        return True    # elle répond (version plus ancienne) : elle tourne déjà
+    except (OSError, ValueError):
+        return False   # personne ne répond : on démarre normalement
 
 
-for _nom, _fonction in list(globals().items()):
-    if _nom in ("noter", "sauver_stats", "onglet_rapport", "annoncer_rapport", "afficher_rapport",
-                "onglet_profils", "dessiner_profils", "activer_profil", "sauver_profils",
-                "onglet_soundboard", "lister_sorties", "sauver_sorties", "dessiner_sons", "ajouter_son", "menu_son",
-                "demarrer_serveur", "etat_pour_api", "onglet_telephone"):
-        setattr(BoiteAOutils, _nom, _fonction)   # on range ces fonctions dans la classe
+def preparer_reglages():
+    """Charge les réglages et remet d'aplomb ce qui vient des anciennes versions."""
+    global ACCENT
+    charger_reglages()
+    for profil in REGLAGES["profils"].values():   # les profils ne touchent plus au son du casque
+        profil["volume"] = None
+    if REGLAGES.get("profil_en_jeu") not in REGLAGES["profils"]:
+        REGLAGES["profil_en_jeu"] = next(iter(REGLAGES["profils"]), "")
+    ACCENT = COULEURS_ACCENT.get(REGLAGES.get("accent"), CYAN)   # la couleur des boutons choisie dans Réglages
+    if REGLAGES.get("demarrage_windows"):   # garde le lancement au démarrage à jour si le fichier a bougé
+        try:
+            regler_demarrage(True)
+        except OSError:
+            pass
+
+
+def revenir_en_arriere(erreur):
+    """FILET DE SÉCURITÉ. Si cette version n'arrive pas à démarrer, on remet la précédente
+    (la mise à jour en garde toujours une copie) et on la relance. Renvoie True si c'est fait."""
+    ici = Path(__file__).resolve()
+    secours = DOSSIER_APPLI / (ici.name + ".ancienne")
+    try:
+        ancienne = re.search(r'^VERSION = "([^"]+)"', secours.read_text(encoding="utf-8"), re.M)
+        if not ancienne or ancienne.group(1) == VERSION:
+            return False   # pas de copie de secours différente : rien à remettre
+        shutil.copy2(ici, DOSSIER_APPLI / (ici.name + ".ratee"))   # on garde la version fautive pour comprendre
+        shutil.copy2(secours, ici)
+        # On coupe les mises à jour automatiques, sinon l'ancienne version réinstallerait aussitôt la fautive
+        reglages = charger_json(FICHIER_REGLAGES, {})
+        reglages["maj_auto"] = False
+        reglages["retour_arriere"] = {"de": VERSION, "vers": ancienne.group(1), "quand": time.strftime("%Y-%m-%d %H:%M:%S")}
+        ecrire_json(FICHIER_REGLAGES, reglages)
+        journal(f"RETOUR EN ARRIÈRE : la v{VERSION} n'a pas démarré, v{ancienne.group(1)} remise en place.\n{erreur}")
+        try:
+            messagebox.showwarning("Boîte à outils", f"La nouvelle version ({VERSION}) n'a pas réussi à démarrer.\n\n"
+                                   f"J'ai remis la version d'avant ({ancienne.group(1)}) et coupé les mises à jour automatiques. "
+                                   "Rien n'est perdu. Préviens Claude : le détail est dans le journal.")
+        except Exception:
+            pass
+        arguments = [sys.executable, str(ici), "--apres-maj"] + (["--cache"] if "--cache" in sys.argv else [])
+        drapeaux = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        subprocess.Popen(arguments, creationflags=drapeaux, close_fds=True)
+        return True
+    except Exception:
+        journal("Retour en arrière impossible :\n" + __import__("traceback").format_exc())
+        return False
 
 
 if __name__ == "__main__":
     if "--apres-maj" in sys.argv:
         time.sleep(3)   # le temps que l'ancienne version se ferme
-    else:
-        # Déjà ouverte ? On montre sa fenêtre au lieu d'en lancer une deuxième.
-        try:
-            action = "rien" if "--cache" in sys.argv else "montrer"
-            requete = urllib.request.Request(f"http://127.0.0.1:{PORT_SERVEUR}/api/fenetre/{action}", method="POST")
-            urllib.request.urlopen(requete, timeout=2)
-            sys.exit(0)
-        except urllib.error.HTTPError:
-            sys.exit(0)   # elle répond (version plus ancienne) : elle tourne déjà
-        except (OSError, ValueError):
-            pass   # personne ne répond : on démarre normalement
-    journal(f"Démarrage {sys.argv[1:]} depuis {Path(__file__).resolve()}")
+    elif deja_ouverte():
+        sys.exit(0)
+    journal(f"Démarrage v{VERSION} {sys.argv[1:]} depuis {Path(__file__).resolve()}")
     surveiller_plantages()
     noter_demarrage()
     threading.Thread(target=reparer_raccourci, daemon=True).start()
@@ -4170,12 +6094,7 @@ if __name__ == "__main__":
     except OSError:
         pass
     try:
-        charger_reglages()
-        if REGLAGES.get("demarrage_windows"):   # garde le lancement au démarrage à jour si le fichier a bougé
-            try:
-                regler_demarrage(True)
-            except OSError:
-                pass
+        preparer_reglages()
         try:   # pour que Windows montre le logo de l'appli (et pas la plume Python) dans la barre des tâches
             import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Crz.BoiteAOutils")
@@ -4186,7 +6105,11 @@ if __name__ == "__main__":
         BoiteAOutils(racine, cache="--cache" in sys.argv)
         racine.mainloop()   # la fenêtre reste ouverte et attend tes clics
     except Exception:
-        journal("Plantage au démarrage :\n" + __import__("traceback").format_exc())
+        erreur = __import__("traceback").format_exc()
+        journal("Plantage au démarrage :\n" + erreur)
+        if revenir_en_arriere(erreur):
+            noter_arret_propre()
+            os._exit(1)   # on s'arrête net : l'ancienne version prend le relais
         raise
     noter_arret_propre()
     journal("Fermeture")
