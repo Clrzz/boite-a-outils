@@ -65,7 +65,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.0.2"
+VERSION = "3.0.3"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -384,7 +384,78 @@ def lire_gpu_nvml():
     return temp.value, util.gpu, round(mem.utilisee / 1048576), watts.value / 1000
 
 
+# --- LibreHardwareMonitor lu une seule fois par seconde, partagé par tous les capteurs ---
+_LHM = {"quand": 0.0, "arbre": None}
+_LHM_VERROU = threading.Lock()
+
+
+def arbre_lhm():
+    """Le contenu de http://127.0.0.1:8085/data.json (gardé 1 s pour ne pas le demander deux fois), ou None."""
+    import urllib.request
+    with _LHM_VERROU:
+        if time.time() - _LHM["quand"] < 1.0:
+            return _LHM["arbre"]
+        try:
+            _LHM["arbre"] = json.loads(urllib.request.urlopen("http://127.0.0.1:8085/data.json", timeout=1.5).read().decode("utf-8"))
+        except Exception:
+            _LHM["arbre"] = None
+        _LHM["quand"] = time.time()
+        return _LHM["arbre"]
+
+
+def lire_gpu_lhm():
+    """La carte graphique NVIDIA vue par LibreHardwareMonitor : (température, charge %, VRAM en Mo, watts) ou None.
+    On la lit là en priorité : moins de programmes qui interrogent le pilote NVIDIA en même temps = moins de risques."""
+    arbre = arbre_lhm()
+    if not arbre:
+        return None
+    valeurs = {}
+
+    def nombre(texte):
+        trouve = re.match(r"\s*(-?[\d]+(?:[.,]\d+)?)\s*(\w*)", str(texte or ""))
+        if not trouve:
+            return None
+        v = float(trouve.group(1).replace(",", "."))
+        return v * 1024 if trouve.group(2).upper() == "GB" else v
+
+    def parcourir(noeud, dans_gpu, groupe):
+        image = str(noeud.get("ImageURL") or "").rsplit("/", 1)[-1].lower()
+        enfants = noeud.get("Children") or []
+        if enfants:
+            if image in IMAGES_MATERIEL:
+                dans_gpu = image == "nvidia.png"
+            elif dans_gpu:
+                groupe = str(noeud.get("Text") or "").lower()
+            for enfant in enfants:
+                parcourir(enfant, dans_gpu, groupe)
+            return
+        if not dans_gpu:
+            return
+        t, v = str(noeud.get("Text") or "").lower(), nombre(noeud.get("Value"))
+        if v is None:
+            return
+        if groupe.startswith("temp") and t == "gpu core":
+            valeurs.setdefault("temp", v)
+        elif groupe.startswith("load") and t == "gpu core":
+            valeurs.setdefault("charge", v)
+        elif t == "gpu memory used":
+            valeurs.setdefault("vram", v)
+        elif groupe.startswith("power") and t == "gpu package":
+            valeurs.setdefault("watts", v)
+
+    parcourir(arbre, False, "")
+    if "temp" not in valeurs or "charge" not in valeurs:
+        return None
+    return round(valeurs["temp"]), round(valeurs["charge"]), round(valeurs.get("vram", 0)), float(valeurs.get("watts", 0))
+
+
 def lire_gpu():
+    try:
+        res = lire_gpu_lhm()
+        if res:
+            return res
+    except Exception:
+        pass
     if sys.platform == "win32":
         try:
             res = lire_gpu_nvml()
@@ -478,10 +549,8 @@ IMAGES_MATERIEL = {"cpu.png", "nvidia.png", "ati.png", "amd.png", "intel.png", "
 
 def lire_lhm():
     """Lit http://127.0.0.1:8085/data.json et renvoie les capteurs au même format que HWiNFO (ou None)."""
-    import urllib.request
-    try:
-        arbre = json.loads(urllib.request.urlopen("http://127.0.0.1:8085/data.json", timeout=1.5).read().decode("utf-8"))
-    except Exception:
+    arbre = arbre_lhm()
+    if arbre is None:
         return None
 
     def nombre(texte):
@@ -3657,7 +3726,9 @@ def diagnostic(appli):
         points.append(("attention", "Capteurs de température",
                        "Aucun logiciel de capteurs ne répond. Lance LibreHardwareMonitor, puis Options > Remote Web Server > Run."))
     # 2. Carte graphique
-    if lire_gpu_nvml() is not None:
+    if lire_gpu_lhm() is not None:
+        points.append(("ok", "Carte graphique", "Lue par LibreHardwareMonitor (rien de plus ne sollicite le pilote NVIDIA)."))
+    elif lire_gpu_nvml() is not None:
         points.append(("ok", "Carte graphique", "Lue directement auprès du pilote NVIDIA (rapide, sans ralentir le PC)."))
     elif lire_gpu() is not None:
         points.append(("ok", "Carte graphique", "Lue avec l'outil nvidia-smi (un peu plus lent que la lecture directe)."))

@@ -1,6 +1,6 @@
 {
-  "version": "3.0.2",
-  "plugin": "1.4.4",
-  "notes": "La grande refonte. Température du processeur de nouveau lue avec LibreHardwareMonitor, dans la boîte à outils et sur le Stream Deck.",
-  "sha256": "255bcc876e2b69ebe45951f9f8e2c1f7a675f2dbf8b078b902c4dc0032d1f797"
+  "version": "3.0.3",
+  "plugin": "1.4.5",
+  "notes": "La carte graphique est lue par LibreHardwareMonitor (le pilote NVIDIA n'est plus sollicité par trois programmes à la fois).",
+  "sha256": "04b9830dd56e4defb44b5bc035058305682db5443359b144b53781f23778495e"
 }
