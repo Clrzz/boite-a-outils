@@ -15,10 +15,9 @@
 #      (des fonctions qui RENVOIENT un résultat, sans rien afficher)
 #   3. Les briques d'affichage (cartes, boutons, onglets...)
 #   4. La fenêtre et ses pages (classe BoiteAOutils)
-#   5. Le coffre-fort, puis le petit serveur pour le téléphone et le Stream Deck
+#   5. Le petit serveur local pour le Stream Deck
 #   6. Le démarrage, tout en bas
 #
-#  Le coffre est rangé dans  C:\Users\<toi>\CoffreFort\coffre.dat
 #  Tes réglages sont dans   C:\Users\<toi>\BoiteAOutils\reglages.json
 # =============================================================
 
@@ -28,10 +27,7 @@ import json
 import os
 import queue
 import re
-import secrets
 import shutil
-import string
-import struct
 import subprocess
 import sys
 import threading
@@ -65,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.0.3"
+VERSION = "3.1.1"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -76,8 +72,6 @@ REGLAGES_DEFAUT = {
     "dossier_a_ranger": str(Path.home() / "Downloads"),
     "alerte_gpu": 83,            # °C
     "alerte_cpu": 90,            # °C (un 13600KF supporte jusqu'à 100 °C)
-    "minutes_entre_prix": 30,
-    "verrou_minutes": 5,
     "apps_a_fermer": ["OneDrive.exe"],
     "mode_performances": True,   # plan d'alim Performances pendant les parties
     "fermer_vers_icone": True,   # la croix range la fenêtre près de l'horloge
@@ -121,14 +115,12 @@ def appliquer_reglages():
     """Recopie les réglages dans les variables utilisées par les outils.
     "global" permet de modifier une variable définie en dehors de la fonction."""
     global DOSSIER_MEDAL, JOURS_CLIPS, DOSSIER_A_RANGER, ALERTE_GPU, ALERTE_CPU
-    global MINUTES_ENTRE_PRIX, VERROU_MINUTES, APPS_A_FERMER
+    global APPS_A_FERMER
     DOSSIER_MEDAL = Path(REGLAGES["dossier_medal"])
     JOURS_CLIPS = int(REGLAGES["jours_clips"])
     DOSSIER_A_RANGER = Path(REGLAGES["dossier_a_ranger"])
     ALERTE_GPU = int(REGLAGES["alerte_gpu"])
     ALERTE_CPU = int(REGLAGES["alerte_cpu"])
-    MINUTES_ENTRE_PRIX = int(REGLAGES["minutes_entre_prix"])
-    VERROU_MINUTES = int(REGLAGES["verrou_minutes"])
     APPS_A_FERMER = list(REGLAGES["apps_a_fermer"])
 
 
@@ -216,12 +208,6 @@ def melanger(c1, c2, t):
     return "#" + "".join(f"{int(x + (y - x) * t):02x}" for x, y in zip(a, b))
 
 
-def assombrir(couleur, facteur=0.35):
-    """Version sombre d'une couleur (pour faire l'effet « lueur » des courbes)."""
-    r, v, b = (int(couleur[i:i + 2], 16) for i in (1, 3, 5))
-    return f"#{int(r * facteur):02x}{int(v * facteur):02x}{int(b * facteur):02x}"
-
-
 # =============================================================
 #  LA "LOGIQUE" : les mêmes fonctions que la version console,
 #  mais elles RENVOIENT des résultats au lieu de faire des print.
@@ -264,21 +250,6 @@ def vieux_clips():
         except OSError:
             pass
     return clips
-
-
-def vider_temp():
-    """Vide le dossier TEMP, renvoie le nombre d'octets libérés."""
-    temp = dossier_temp()
-    avant = taille_dossier(temp)
-    for element in temp.iterdir():
-        try:
-            if element.is_dir():
-                shutil.rmtree(element)
-            else:
-                element.unlink()
-        except OSError:
-            pass   # fichier utilisé par une appli : on le laisse
-    return avant - taille_dossier(temp)
 
 
 def vider_dossier(dossier):
@@ -342,8 +313,8 @@ def supprimer(fichiers):
     return libere
 
 
-# Lecture du GPU directement par le pilote NVIDIA (nvml.dll), sans relancer nvidia-smi toutes les 2 s
-# (lancer nvidia-smi en boucle peut provoquer des petites saccades / mini freeze).
+# Lecture du GPU directement par le pilote NVIDIA (nvml.dll) : sert de secours quand LibreHardwareMonitor ne répond pas.
+# (On ne lance jamais d'autre programme en boucle : ça peut provoquer des petites saccades / mini freeze.)
 _NVML = {"lib": None, "h": None, "ko": False}
 _NVML_VERROU = threading.Lock()
 
@@ -463,92 +434,19 @@ def lire_gpu():
                 return res
         except Exception:
             pass
-    try:
-        sortie = subprocess.run(
-            ["nvidia-smi",
-             "--query-gpu=temperature.gpu,utilization.gpu,memory.used,power.draw",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, encoding=ENCODAGE, errors="replace", timeout=5,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # pas de console qui clignote
-        ).stdout.strip()
-        temp, util, vram, watts = [v.strip() for v in sortie.split(",")]
-        return round(float(temp)), round(float(util)), round(float(vram)), float(watts)
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        return None
+    return None
 
 
-# --- Lecture des capteurs de HWiNFO (CPU, disques...) ---
-# HWiNFO peut partager ses mesures dans une "mémoire partagée" que les autres
-# programmes lisent. Il faut l'activer : Paramètres > "Shared Memory Support".
-# On lit cette mémoire avec ctypes (qui permet d'appeler Windows directement).
-
-TYPES_HWINFO = {1: "temp", 3: "fan", 7: "usage"}   # 1 = température, 3 = ventilateur, 7 = utilisation en %
-
-
-def decoder_hwinfo(octets):
-    """Transforme la mémoire de HWiNFO en liste de capteurs :
-    [(nom_du_composant, nom_du_capteur, type, valeur, unité), ...]"""
-    (_sig, _ver, _rev, _poll, off_cap, taille_cap, nb_cap,
-     off_lect, taille_lect, nb_lect) = struct.unpack_from("<IIIqIIIIII", octets, 0)
-
-    def texte(debut, longueur):
-        return octets[debut:debut + longueur].split(b"\0")[0].decode("cp1252", errors="ignore")
-
-    composants = []
-    for i in range(nb_cap):
-        debut = off_cap + i * taille_cap
-        composants.append(texte(debut + 136, 128) or texte(debut + 8, 128))
-    capteurs = []
-    for i in range(nb_lect):
-        debut = off_lect + i * taille_lect
-        type_, num_cap = struct.unpack_from("<II", octets, debut)
-        nom = texte(debut + 140, 128) or texte(debut + 12, 128)
-        valeur = struct.unpack_from("<d", octets, debut + 284)[0]
-        composant = composants[num_cap] if num_cap < len(composants) else ""
-        unite = texte(debut + 268, 16)
-        capteurs.append((composant, nom, TYPES_HWINFO.get(type_, "autre"), valeur, unite))
-    return capteurs
-
-
-def lire_hwinfo():
-    """Renvoie la liste des capteurs, ou None si HWiNFO ne partage rien."""
-    try:
-        import ctypes
-        k32 = ctypes.windll.kernel32
-    except (ImportError, AttributeError):
-        return None   # pas sous Windows
-    k32.OpenFileMappingW.restype = ctypes.c_void_p
-    k32.MapViewOfFile.restype = ctypes.c_void_p
-    k32.MapViewOfFile.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_size_t]
-    k32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
-    k32.CloseHandle.argtypes = [ctypes.c_void_p]
-    poignee = k32.OpenFileMappingW(4, False, "Global\\HWiNFO_SENS_SM2")   # 4 = lecture seule
-    if not poignee:
-        return lire_lhm()   # HWiNFO ne partage rien : on essaie LibreHardwareMonitor
-    try:
-        adresse = k32.MapViewOfFile(poignee, 4, 0, 0, 0)
-        if not adresse:
-            return None
-        try:
-            entete = ctypes.string_at(adresse, 44)
-            _, _, _, _, off_cap, taille_cap, nb_cap, off_lect, taille_lect, nb_lect = struct.unpack("<IIIqIIIIII", entete)
-            taille = max(off_cap + taille_cap * nb_cap, off_lect + taille_lect * nb_lect)
-            return decoder_hwinfo(ctypes.string_at(adresse, taille))
-        finally:
-            k32.UnmapViewOfFile(adresse)
-    finally:
-        k32.CloseHandle(poignee)
-
-
-# --- Plan B : LibreHardwareMonitor (gratuit, sans la limite de 12 h de HWiNFO gratuit) ---
-# Dans LibreHardwareMonitor : Options > Remote Web Server > Run (port 8085).
+# --- Les capteurs (CPU, disques, ventilateurs...) : LibreHardwareMonitor ---
+# Il faut le lancer avec le serveur web activé : Options > Remote Web Server > Run (port 8085).
 # Les images que LibreHardwareMonitor donne aux COMPOSANTS (les groupes ont d'autres images)
 IMAGES_MATERIEL = {"cpu.png", "nvidia.png", "ati.png", "amd.png", "intel.png", "hdd.png", "ram.png",
                    "mainboard.png", "chip.png", "nic.png", "battery.png", "psu.png", "bigng.png"}
 
 
 def lire_lhm():
-    """Lit http://127.0.0.1:8085/data.json et renvoie les capteurs au même format que HWiNFO (ou None)."""
+    """Lit http://127.0.0.1:8085/data.json et renvoie la liste des capteurs
+    [(composant, nom, type, valeur, unité), ...], ou None si LibreHardwareMonitor ne répond pas."""
     arbre = arbre_lhm()
     if arbre is None:
         return None
@@ -629,8 +527,13 @@ def lire_lhm():
     return uniques or None
 
 
+def lire_capteurs():
+    """Tous les capteurs du PC, lus par LibreHardwareMonitor (None s'il ne répond pas)."""
+    return lire_lhm()
+
+
 def sorte_capteur(nom):
-    """HWiNFO peut être en anglais ou en français : on ramène le nom du capteur à un mot-clé."""
+    """Les capteurs ont des noms en anglais ou en français : on ramène le nom à un mot-clé."""
     n = nom.lower()
     if n in ("cpu package", "cpu entier"):
         return "cpu_temp"
@@ -697,8 +600,8 @@ def lire_tout():
             return None
     resultat = {"gpu": essayer(lire_gpu), "ram": essayer(lire_ram), "cpu_temp": None, "cpu_usage": None,
                 "disques": [], "reseau": essayer(compteurs_reseau), "ventilos": [], "temps": [], "watts": {}}
-    capteurs = essayer(lire_hwinfo)
-    resultat["hwinfo"] = capteurs is not None
+    capteurs = essayer(lire_capteurs)
+    resultat["capteurs_ok"] = capteurs is not None
     commandes = {(c, n): v for c, n, type_, v, *_ in capteurs or [] if type_ == "commande"}
     for composant, nom, type_, valeur, *_ in capteurs or []:
         if type_ == "fan":   # un ventilateur : tours par minute + la vitesse demandée (en %) si on la connaît
@@ -714,7 +617,7 @@ def lire_tout():
             resultat["cpu_usage"] = valeur
         elif type_ == "temp" and sorte_capteur(nom) == "disque_temp":
             disque = composant.replace("S.M.A.R.T.: ", "").split("(")[0].strip()
-            lettre = re.search(r"\(([A-Z]):", composant)   # HWiNFO écrit souvent « (C:) » dans le nom
+            lettre = re.search(r"\(([A-Z]):", composant)   # le nom contient parfois « (C:) »
             resultat["disques"].append((disque, valeur, lettre.group(1) if lettre else None))
     return resultat
 
@@ -723,7 +626,7 @@ MODELES_LECTEURS = {}
 
 
 def modeles_lecteurs():
-    """{lettre: nom du disque} via PowerShell (une seule fois), pour relier HWiNFO aux lettres."""
+    """{lettre: nom du disque} via PowerShell (une seule fois), pour relier les capteurs aux lettres."""
     if MODELES_LECTEURS or sys.platform != "win32":
         return MODELES_LECTEURS
     commande = ("Get-Partition | Where-Object DriveLetter | ForEach-Object { \"$($_.DriveLetter)|$((Get-Disk "
@@ -742,7 +645,7 @@ def modeles_lecteurs():
 
 
 def lettre_du_disque(modele):
-    """Trouve la lettre (C, D...) d'un disque à partir de son nom HWiNFO."""
+    """Trouve la lettre (C, D...) d'un disque à partir de son nom donné par les capteurs."""
     mots = {m for m in re.findall(r"[a-z0-9]{4,}", modele.lower())}
     meilleur, score = None, 0
     for lettre, nom in MODELES_LECTEURS.items():
@@ -1157,7 +1060,7 @@ def version_bios():
 
 # --- Santé des disques ---
 def etat_disques():
-    """Infos de Windows (sans droits admin) + infos SMART de HWiNFO si dispo."""
+    """Infos de Windows (sans droits admin) + infos SMART de LibreHardwareMonitor si dispo."""
     commande = ("Get-PhysicalDisk | Select-Object FriendlyName,MediaType,HealthStatus,Size | "
                 "ConvertTo-Json -Compress")
     sortie = subprocess.run(["powershell", "-NoProfile", "-Command", commande], capture_output=True, text=True, encoding=ENCODAGE, errors="replace",
@@ -1177,8 +1080,8 @@ def etat_disques():
             "taille": d.get("Size") or 0,
             "vie": None, "temp": None, "ecrit": None, "panne": False,
         })
-    # HWiNFO : durée de vie restante, température, données écrites
-    for composant, nom, type_, valeur, *reste in lire_hwinfo() or []:
+    # LibreHardwareMonitor : durée de vie restante, température, données écrites
+    for composant, nom, type_, valeur, *reste in lire_capteurs() or []:
         if not composant.startswith("S.M.A.R.T."):
             continue
         modele = composant.replace("S.M.A.R.T.: ", "").split("(")[0].strip().lower()
@@ -1233,25 +1136,6 @@ def ranger(plan):
     return deplaces
 
 
-def trouver_prix(url):
-    requete = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    page = urllib.request.urlopen(requete, timeout=15).read().decode("utf-8", errors="ignore")
-    trouve = re.findall(r'"price"\s*:\s*"?(\d+(?:[.,]\d+)?)', page)
-    if not trouve:
-        trouve = re.findall(r"(\d{1,3}(?:[ \u00a0\u202f.]?\d{3})*(?:,\d{2})?)\s?€", page)
-    prix = []
-    for t in trouve:
-        t = re.sub(r"[ \u00a0\u202f]", "", t)
-        if "," in t:
-            t = t.replace(".", "").replace(",", ".")
-        try:
-            prix.append(float(t))
-        except ValueError:
-            pass
-    prix = [p for p in prix if p > 50]
-    return min(prix) if prix else None
-
-
 # =============================================================
 #  LA FENÊTRE
 #  Une "classe" regroupe des données et des fonctions qui vont
@@ -1298,103 +1182,11 @@ class Carte(tk.Frame):
     def pack_forget(self): self.exterieur.pack_forget()
     def grid(self, **kw): self.exterieur.grid(**kw)
     grid_configure = grid
-    def grid_forget(self): self.exterieur.grid_forget()
-    def grid_remove(self): self.exterieur.grid_remove()
     def place(self, **kw): self.exterieur.place(**kw)
     def destroy(self):
         ext = self.exterieur
         super().destroy()
         ext.destroy()
-
-
-# =============================================================
-#  DÉMARRAGE
-# =============================================================
-
-
-# =============================================================
-#  🔐 COFFRE-FORT  -  gestionnaire de mots de passe chiffré
-# =============================================================
-#  COMMENT C'EST PROTÉGÉ ?
-#  1. Ton mot de passe maître n'est JAMAIS enregistré nulle part.
-#  2. On le transforme en "clé" avec scrypt : un calcul volontairement
-#     lent (~0,5 s), pour qu'un pirate ne puisse pas tester des millions
-#     de mots de passe par seconde.
-#  3. Avec cette clé, on chiffre tout le coffre en AES-256-GCM, le même
-#     chiffrement que les banques et les VPN. Sans le bon mot de passe,
-#     le fichier n'est qu'un tas d'octets illisibles.
-#  ⚠️ Mot de passe maître oublié = coffre perdu. Personne ne peut le
-#     récupérer, même pas moi. C'est le principe d'un coffre-fort !
-#
-#  Le chiffrement AES vient de la librairie "cryptography".
-#  Si elle manque, l'onglet propose de l'installer tout seul.
-# =============================================================
-
-FICHIER_COFFRE = Path.home() / "CoffreFort" / "coffre.dat"
-VERROU_MINUTES = 5          # verrouillage auto après X minutes sans rien toucher
-EFFACER_PRESSE_PAPIER = 30  # secondes avant d'effacer un mdp copié
-
-AESGCM = None       # rempli par charger_crypto()
-InvalidTag = None
-
-
-def charger_crypto():
-    """Importe "cryptography". Renvoie True si c'est bon."""
-    global AESGCM, InvalidTag
-    try:
-        from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _AESGCM
-        from cryptography.exceptions import InvalidTag as _InvalidTag
-    except ImportError:
-        return False
-    AESGCM, InvalidTag = _AESGCM, _InvalidTag
-    return True
-
-
-def installer_crypto():
-    return installer_paquets("cryptography")
-
-
-# Format du fichier : [16 octets de sel][12 octets de nonce][données chiffrées]
-#  - le sel rend ta clé unique même si quelqu'un a le même mdp maître
-#  - le nonce change à chaque sauvegarde (obligatoire pour AES-GCM)
-
-def deriver_cle(mot_de_passe, sel):
-    """Mot de passe maître + sel -> clé de 32 octets (256 bits)."""
-    return hashlib.scrypt(mot_de_passe.encode("utf-8"), salt=sel,
-                          n=2**17, r=8, p=1, maxmem=2**28, dklen=32)
-
-
-def chiffrer(donnees, mot_de_passe):
-    sel = secrets.token_bytes(16)
-    nonce = secrets.token_bytes(12)
-    cle = deriver_cle(mot_de_passe, sel)
-    texte = json.dumps(donnees, ensure_ascii=False).encode("utf-8")
-    return sel + nonce + AESGCM(cle).encrypt(nonce, texte, None)
-
-
-def dechiffrer(contenu, mot_de_passe):
-    """Renvoie les données, ou lève InvalidTag si le mot de passe est faux."""
-    sel, nonce, chiffre = contenu[:16], contenu[16:28], contenu[28:]
-    cle = deriver_cle(mot_de_passe, sel)
-    return json.loads(AESGCM(cle).decrypt(nonce, chiffre, None).decode("utf-8"))
-
-
-def sauvegarder_coffre(donnees, mot_de_passe):
-    FICHIER_COFFRE.parent.mkdir(parents=True, exist_ok=True)
-    temporaire = FICHIER_COFFRE.with_suffix(".tmp")
-    temporaire.write_bytes(chiffrer(donnees, mot_de_passe))
-    if FICHIER_COFFRE.exists():   # on garde la version d'avant en secours (.bak)
-        os.replace(FICHIER_COFFRE, FICHIER_COFFRE.with_suffix(".bak"))
-    os.replace(temporaire, FICHIER_COFFRE)   # remplacement "d'un coup" : jamais de fichier à moitié écrit
-
-
-def generer_mdp(longueur=20):
-    """Un mot de passe vraiment aléatoire (module secrets = qualité crypto)."""
-    alphabet = string.ascii_letters + string.digits + "!@#$%&*-_=+?"
-    while True:
-        mdp = "".join(secrets.choice(alphabet) for _ in range(longueur))
-        if any(c.islower() for c in mdp) and any(c.isupper() for c in mdp) and any(c.isdigit() for c in mdp):
-            return mdp
 
 
 # =============================================================
@@ -1462,17 +1254,6 @@ if not REGLAGES.get("profils_sans_volume"):   # v2.0.7 : les profils ne touchent
     REGLAGES["profils_sans_volume"] = True
 
 
-def regler_volume(pourcentage):
-    """Règle le volume en « appuyant » sur les touches volume du clavier (chaque appui = 2 %)."""
-    import ctypes
-    appuyer = lambda touche: (ctypes.windll.user32.keybd_event(touche, 0, 0, 0),
-                              ctypes.windll.user32.keybd_event(touche, 0, 2, 0))
-    for _ in range(50):
-        appuyer(0xAE)   # volume -
-    for _ in range(round(pourcentage / 2)):
-        appuyer(0xAF)   # volume +
-
-
 def appliquer_profil(nom, ouvrir=True):
     """Fait tout le travail d'un profil. Renvoie un petit compte rendu.
     ouvrir=False : on n'ouvre aucune appli (utile quand le profil se met tout seul au lancement d'un jeu)."""
@@ -1497,107 +1278,6 @@ def appliquer_profil(nom, ouvrir=True):
     REGLAGES["profil_actif"] = nom
     enregistrer_reglages()
     return fait
-
-
-# =============================================================
-#  🔊 SOUNDBOARD  -  des sons envoyés dans Discord comme ton micro
-# =============================================================
-#  Le principe : on joue le son DEUX fois en même temps :
-#   - dans un « câble audio virtuel » (VB-CABLE) que Discord écoute comme un micro
-#   - dans ton casque, pour que tu l'entendes aussi
-#  Les librairies sounddevice et soundfile servent à choisir la sortie audio.
-
-DOSSIER_SONS = DOSSIER_APPLI / "sons"
-REGLAGES_DEFAUT.update({"sons": [], "sortie_discord": "", "sortie_ecoute": ""})
-for _cle in ("sons", "sortie_discord", "sortie_ecoute"):
-    REGLAGES.setdefault(_cle, REGLAGES_DEFAUT[_cle])
-COULEURS_SONS = [CYAN, ROSE, VIOLET, VERT, ORANGE, "#4f8cff"]
-lectures_en_cours = []   # pour pouvoir tout arrêter
-
-
-def charger_audio(demander_parent=None):
-    """Importe sounddevice + soundfile (propose de les installer s'il manque)."""
-    try:
-        import sounddevice
-        import soundfile
-        return sounddevice, soundfile
-    except (ImportError, OSError):
-        pass
-    if demander_parent is None or not messagebox.askyesno(
-            "Soundboard", "Le soundboard a besoin de 2 librairies (sounddevice et soundfile).\n\n"
-                          "Les installer maintenant ? (environ 30 secondes)", parent=demander_parent):
-        return None
-    if not installer_paquets("sounddevice", "soundfile"):
-        messagebox.showerror("Oups", "Installation ratée. Dans PowerShell :\npython -m pip install sounddevice soundfile")
-        return None
-    try:
-        import sounddevice
-        import soundfile
-        return sounddevice, soundfile
-    except (ImportError, OSError):
-        return None
-
-
-def sorties_audio(sd):
-    """Noms des sorties audio (on garde celles de l'API « MME », la plus tolérante)."""
-    mme = next((i for i, h in enumerate(sd.query_hostapis()) if h["name"] == "MME"), None)
-    noms = []
-    for d in sd.query_devices():
-        if d["max_output_channels"] > 0 and (mme is None or d["hostapi"] == mme) and d["name"] not in noms:
-            noms.append(d["name"])
-    return noms
-
-
-def index_sortie(sd, nom):
-    mme = next((i for i, h in enumerate(sd.query_hostapis()) if h["name"] == "MME"), None)
-    for i, d in enumerate(sd.query_devices()):
-        if d["name"] == nom and d["max_output_channels"] > 0 and (mme is None or d["hostapi"] == mme):
-            return i
-    return None
-
-
-def jouer_son(son_id):
-    """Joue un son du soundboard (appelé depuis la fenêtre, le Stream Deck ou le téléphone)."""
-    son = next((s for s in REGLAGES["sons"] if s["id"] == son_id), None)
-    audio = charger_audio()
-    if not son or not audio:
-        return False
-    sd, sf = audio
-    donnees, frequence = sf.read(son["fichier"], dtype="float32", always_2d=True)
-    donnees = donnees * (son.get("volume", 80) / 100)
-    cibles = []
-    if REGLAGES.get("sortie_discord"):   # le câble virtuel écouté par Discord
-        cibles.append(index_sortie(sd, REGLAGES["sortie_discord"]))
-    ecoute = REGLAGES.get("sortie_ecoute")
-    if ecoute == "":                     # "" = la sortie par défaut de Windows (ton casque)
-        cibles.append(sd.default.device[1])
-    elif ecoute:
-        cibles.append(index_sortie(sd, ecoute))
-    for index in dict.fromkeys(c for c in cibles if c is not None and c >= 0):   # sans doublons
-        canaux = min(donnees.shape[1], sd.query_devices(index)["max_output_channels"])
-
-        def lire(i=index, c=canaux):
-            flux = None
-            try:
-                flux = sd.OutputStream(device=i, samplerate=frequence, channels=c, dtype="float32")
-                lectures_en_cours.append(flux)
-                with flux:
-                    flux.write(donnees[:, :c].copy())
-            except Exception:
-                pass
-            finally:
-                if flux in lectures_en_cours:
-                    lectures_en_cours.remove(flux)
-        threading.Thread(target=lire, daemon=True).start()
-    return True
-
-
-def stopper_sons():
-    for flux in list(lectures_en_cours):
-        try:
-            flux.abort()
-        except Exception:
-            pass
 
 
 # =============================================================
@@ -1852,177 +1532,15 @@ MOIS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sep
 
 
 # =============================================================
-#  📱 TÉLÉPHONE + STREAM DECK  -  un petit serveur web local
+#  📡 STREAM DECK  -  un petit serveur web local
 # =============================================================
-#  La boîte à outils ouvre un mini site sur ton réseau (port 8765).
-#  - Ton téléphone (même Wi-Fi) l'ouvre dans le navigateur, avec un code PIN.
-#  - Le plugin Stream Deck lui parle pour jouer les sons / changer de profil.
+#  La boîte à outils ouvre un petit serveur, visible seulement depuis ce PC
+#  (adresse 127.0.0.1, port 8765). Le plugin Stream Deck lui parle pour
+#  changer de profil, couper le micro, piloter la musique...
 
 import http.server
-import socket
 
 PORT_SERVEUR = 8765
-REGLAGES.setdefault("pin_telephone", "".join(secrets.choice("0123456789") for _ in range(6)))
-
-
-def ip_locale():
-    """L'adresse de ton PC sur ton réseau (genre 192.168.1.20)."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("8.8.8.8", 80))   # aucun paquet n'est envoyé, ça sert juste à trouver la bonne carte
-            return s.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"
-
-
-def adresses_mac():
-    """Cartes réseau branchées : [(nom, adresse MAC)] (utile pour allumer le PC à distance)."""
-    commande = ("Get-NetAdapter -Physical | Where-Object Status -eq 'Up' | "
-                "ForEach-Object { $_.InterfaceDescription + '|' + $_.MacAddress }")
-    try:
-        sortie = subprocess.run(["powershell", "-NoProfile", "-Command", commande], capture_output=True, text=True, encoding=ENCODAGE, errors="replace",
-                                timeout=20, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    return [tuple(l.split("|", 1)) for l in sortie.splitlines() if "|" in l]
-
-
-# La page du téléphone (HTML + CSS + JavaScript), rangée dans une grande chaîne de texte
-PAGE_TELEPHONE = r'''<!doctype html>
-<html lang="fr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#07070c">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="CRZ PC">
-<title>CRZ PC</title>
-<style>
-  :root { --fond:#07070c; --carte:#0f0f19; --bord:#23233a; --texte:#e9e9ff; --gris:#8a8aa8; --cyan:#00e5ff; --rose:#ff2bd6; --violet:#8b5cff; --vert:#3dffa2; --rouge:#ff4d6d; }
-  * { box-sizing:border-box; margin:0; -webkit-tap-highlight-color:transparent; }
-  body { background:var(--fond); color:var(--texte); font-family:-apple-system,"Segoe UI",Roboto,sans-serif; padding:16px 16px calc(24px + env(safe-area-inset-bottom)); }
-  header { display:flex; justify-content:space-between; align-items:center; margin:4px 0 16px; }
-  .logo { font-weight:800; font-size:20px; } .logo b { color:var(--cyan); } .logo i { color:var(--rose); font-style:normal; }
-  #etat { font-size:12px; color:var(--gris); }
-  h2 { font-size:11px; letter-spacing:2px; color:var(--gris); text-transform:uppercase; margin:18px 0 8px; }
-  .grille { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .carte { background:var(--carte); border:1px solid var(--bord); border-radius:14px; padding:14px; }
-  .lbl { font-size:11px; letter-spacing:1.5px; color:var(--gris); text-transform:uppercase; }
-  .grand { font-size:40px; font-weight:800; line-height:1.1; }
-  .moyen { font-size:20px; font-weight:700; }
-  .sub { font-size:12px; color:var(--gris); }
-  .cyan { color:var(--cyan); text-shadow:0 0 14px #00e5ff88; } .rose { color:var(--rose); text-shadow:0 0 14px #ff2bd688; }
-  .barre { height:5px; background:#1c1c2c; border-radius:3px; margin-top:8px; } .barre i { display:block; height:100%; border-radius:3px; }
-  button { font:inherit; border:none; cursor:pointer; }
-  .pad { background:var(--carte); border:2px solid; border-radius:14px; padding:18px 8px; font-weight:700; font-size:15px; min-height:70px; }
-  .pad:active { transform:scale(.96); filter:brightness(1.4); }
-  .action { background:var(--carte); border:1px solid var(--bord); color:var(--texte); border-radius:12px; padding:14px; font-weight:600; font-size:14px; }
-  .action.danger { border-color:#ff4d6d66; color:var(--rouge); }
-  .profil { border-radius:12px; padding:14px 6px; font-weight:700; font-size:14px; background:var(--carte); color:var(--texte); border:1px solid var(--bord); }
-  .profil.actif { border-color:var(--cyan); color:var(--cyan); box-shadow:0 0 12px #00e5ff44 inset; }
-  .trois { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
-  #pin { position:fixed; inset:0; background:var(--fond); display:none; flex-direction:column; align-items:center; justify-content:center; gap:16px; padding:24px; }
-  #pin input { background:var(--carte); border:1px solid var(--bord); color:var(--texte); font-size:28px; letter-spacing:10px; text-align:center; padding:12px; border-radius:12px; width:240px; }
-  #pin button { background:var(--cyan); color:var(--fond); font-weight:800; padding:12px 28px; border-radius:12px; font-size:16px; }
-  .note { font-size:12px; color:var(--gris); line-height:1.5; }
-  #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:var(--carte); border:1px solid var(--cyan); color:var(--cyan); padding:10px 16px; border-radius:20px; font-size:13px; opacity:0; transition:opacity .2s; pointer-events:none; }
-</style>
-</head>
-<body>
-<header><div class="logo">⚡ <b>CRZ</b> <i>PC</i></div><div id="etat">connexion...</div></header>
-
-<div class="grille">
-  <div class="carte"><div class="lbl">CPU</div><div class="grand cyan" id="cpu">--°</div><div class="sub" id="cpuSub"></div><div class="barre"><i id="cpuBar" style="background:var(--cyan);width:0"></i></div></div>
-  <div class="carte"><div class="lbl">GPU</div><div class="grand rose" id="gpu">--°</div><div class="sub" id="gpuSub"></div><div class="barre"><i id="gpuBar" style="background:var(--rose);width:0"></i></div></div>
-  <div class="carte"><div class="lbl">RAM</div><div class="moyen" id="ram">--</div></div>
-  <div class="carte"><div class="lbl">Connexion</div><div class="moyen" id="net">--</div></div>
-</div>
-<div class="carte" style="margin-top:10px"><div class="lbl">En jeu</div><div class="moyen cyan" id="jeu">--</div></div>
-
-<h2>Musique</h2>
-<div class="carte"><div class="moyen" id="musique" style="font-size:16px">Rien en lecture</div>
-  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:12px">
-    <button class="action" onclick="envoyer('media/precedent')">⏮</button><button class="action" onclick="envoyer('media/playpause')">⏯</button>
-    <button class="action" onclick="envoyer('media/suivant')">⏭</button><button class="action" onclick="envoyer('media/volmoins')">🔉</button>
-    <button class="action" onclick="envoyer('media/volplus')">🔊</button></div></div>
-<button class="action" id="micro" style="width:100%;margin-top:10px;font-size:16px" onclick="envoyer('micro/basculer')">🎙 Micro</button>
-
-<h2>Soundboard</h2>
-<div class="grille" id="sons"></div>
-<button class="action" style="width:100%;margin-top:10px" onclick="envoyer('stop/tout')">⏹ Stop les sons</button>
-
-<h2>Profils</h2>
-<div class="trois" id="profils"></div>
-
-<h2>PC</h2>
-<div class="grille">
-  <button class="action" onclick="pc('verrouiller','Verrouiller le PC ?')">🔒 Verrouiller</button>
-  <button class="action" onclick="pc('veille','Mettre le PC en veille ?')">🌙 Veille</button>
-  <button class="action" onclick="pc('redemarrer','Redémarrer le PC dans 10 s ?')">🔄 Redémarrer</button>
-  <button class="action danger" onclick="pc('eteindre','Éteindre le PC dans 10 s ?')">⏻ Éteindre</button>
-</div>
-<h2>Allumer le PC</h2>
-<p class="note">Quand le PC est éteint, cette page ne répond plus. Pour l'allumer, utilise l'appli « Wake On LAN » configurée avec l'adresse MAC affichée dans la boîte à outils (page Téléphone).</p>
-
-<div id="pin"><div class="logo" style="font-size:26px">⚡ <b>CRZ</b> <i>PC</i></div><div class="note">Entre le code PIN affiché dans la boîte à outils</div><input id="pinInput" inputmode="numeric" maxlength="6" autocomplete="off"><button onclick="validerPin()">Entrer</button></div>
-<div id="toast"></div>
-
-<script>
-  let pin = localStorage.getItem("pin") || "";
-  let profilsDessines = "", sonsDessines = "";
-  const $ = (id) => document.getElementById(id);
-
-  function toast(t) { $("toast").textContent = t; $("toast").style.opacity = 1; setTimeout(() => $("toast").style.opacity = 0, 1500); }
-  function demanderPin() { $("pin").style.display = "flex"; $("pinInput").focus(); }
-  function validerPin() { pin = $("pinInput").value.trim(); localStorage.setItem("pin", pin); $("pin").style.display = "none"; rafraichir(); }
-
-  async function api(chemin, methode = "GET") {
-    const r = await fetch("/api/" + chemin, { method: methode, headers: { "X-Pin": pin } });
-    if (r.status === 401) { demanderPin(); throw new Error("PIN"); }
-    return r.json();
-  }
-  async function envoyer(chemin) { try { await api(chemin, "POST"); toast("✓"); setTimeout(rafraichir, 400); } catch (e) {} }
-  function pc(action, question) { if (confirm(question)) envoyer("pc/" + action); }
-
-  function echapper(t) { return String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
-
-  async function rafraichir() {
-    try {
-      const e = await api("etat");
-      $("etat").textContent = "● en ligne"; $("etat").style.color = "var(--vert)";
-      if (e.cpu_temp != null) { $("cpu").textContent = Math.round(e.cpu_temp) + "°"; $("cpuBar").style.width = e.cpu_temp + "%"; }
-      $("cpuSub").textContent = e.cpu_usage != null ? "Charge " + Math.round(e.cpu_usage) + " %" : "";
-      if (e.gpu) { $("gpu").textContent = e.gpu[0] + "°"; $("gpuBar").style.width = e.gpu[0] + "%"; $("gpuSub").textContent = e.gpu[1] + " % · " + Math.round(e.gpu[3]) + " W"; }
-      if (e.ram) $("ram").textContent = e.ram[0].toFixed(1) + " / " + Math.round(e.ram[1]) + " Go";
-      if (e.reseau) $("net").textContent = "↓ " + e.reseau[0].toFixed(1) + "  ↑ " + e.reseau[1].toFixed(1);
-      $("jeu").textContent = e.jeu || "Aucun jeu";
-      $("musique").textContent = e.musique || "Rien en lecture";
-      const m = $("micro");
-      if (e.micro_coupe === true) { m.textContent = "🔇 Micro coupé (appuie pour réactiver)"; m.style.background = "var(--rouge)"; m.style.color = "#fff"; }
-      else if (e.micro_coupe === false) { m.textContent = "🎙 Micro actif (appuie pour couper)"; m.style.background = "var(--carte)"; m.style.color = "var(--vert)"; }
-      const s = JSON.stringify(e.sons);
-      if (s !== sonsDessines) {
-        sonsDessines = s;
-        $("sons").innerHTML = e.sons.length ? e.sons.map((x) => `<button class="pad" style="border-color:${x.couleur};color:${x.couleur}" onclick="envoyer('son/${x.id}')">${echapper(x.nom)}</button>`).join("")
-          : `<p class="note">Ajoute des sons dans la boîte à outils (page Soundboard).</p>`;
-      }
-      const p = JSON.stringify([e.profils, e.profil]);
-      if (p !== profilsDessines) {
-        profilsDessines = p;
-        $("profils").innerHTML = e.profils.map((n) => `<button class="profil ${n === e.profil ? "actif" : ""}" onclick="envoyer('profil/${encodeURIComponent(n)}')">${echapper(n)}</button>`).join("");
-      }
-    } catch (err) {
-      if (err.message !== "PIN") { $("etat").textContent = "● hors ligne"; $("etat").style.color = "var(--rouge)"; }
-    }
-  }
-  if (!pin) demanderPin();
-  rafraichir();
-  setInterval(rafraichir, 2000);
-</script>
-</body>
-</html>
-'''
 
 
 def action_pc(action):
@@ -2199,35 +1717,6 @@ class Onglets(tk.Frame):
             self.pages[nom][0].config(text=f"{nom}   {texte}" if texte else nom)
 
 
-class Defilant(tk.Frame):
-    """Un cadre qu'on peut faire défiler à la molette quand le contenu est trop haut.
-    On met le contenu dans `.dedans`."""
-
-    def __init__(self, parent, fond=CARTE):
-        super().__init__(parent, bg=fond)
-        self.toile = tk.Canvas(self, bg=fond, highlightthickness=0, bd=0)
-        self.barre = ttk.Scrollbar(self, orient="vertical", command=self.toile.yview)
-        self.dedans = tk.Frame(self.toile, bg=fond)
-        self.fenetre = self.toile.create_window(0, 0, window=self.dedans, anchor="nw")
-        self.toile.configure(yscrollcommand=self.regler_barre)
-        self.toile.pack(side="left", fill="both", expand=True)
-        self.dedans.bind("<Configure>", lambda e: self.toile.configure(scrollregion=self.toile.bbox("all")))
-        self.toile.bind("<Configure>", lambda e: self.toile.itemconfigure(self.fenetre, width=e.width))
-        self.bind("<Enter>", lambda e: self.toile.bind_all("<MouseWheel>", self.molette))
-        self.bind("<Leave>", lambda e: self.toile.unbind_all("<MouseWheel>"))
-
-    def regler_barre(self, debut, fin):
-        self.barre.set(debut, fin)
-        if float(debut) <= 0 and float(fin) >= 1:   # tout tient à l'écran : pas besoin de barre
-            self.barre.pack_forget()
-        else:
-            self.barre.pack(side="right", fill="y")
-
-    def molette(self, evt):
-        if self.toile.yview() != (0.0, 1.0):
-            self.toile.yview_scroll(-1 if evt.delta > 0 else 1, "units")
-
-
 class Bulle:
     """Une petite explication qui apparaît quand la souris reste sur un élément."""
 
@@ -2371,6 +1860,14 @@ class Navigation:
 # =============================================================
 
 NOUVEAUTES = [
+    ("3.1.0", "Plus léger, plus sûr", [
+        "Retirés : le coffre-fort, l'alerte prix, le soundboard et la page Téléphone (tu ne t'en servais pas)",
+        "Le petit serveur du Stream Deck n'écoute plus que ce PC : le téléphone et le Wi-Fi n'y ont plus accès",
+        "Les sites web ouverts dans ton navigateur ne peuvent plus lui envoyer d'ordres",
+        "Nouvelle alerte : « Ventilateur du processeur trop lent » (avec le conseil pour la régler)",
+        "Les capteurs sont lus uniquement par LibreHardwareMonitor (HWiNFO n'est plus utilisé)",
+        "Les réglages du Stream Deck sont maintenant dans Réglages > Stream Deck",
+    ]),
     ("3.0.0", "La grande refonte", [
         "Fini les fermetures toutes seules : la lecture du micro a été réécrite",
         "Accueil : une liste « À faire » te dit quoi regarder, avec un bouton pour y aller",
@@ -2381,7 +1878,7 @@ NOUVEAUTES = [
         "Nouveau : le profil Jeu peut se mettre tout seul quand un jeu démarre",
         "Nouveau : notifications Windows (surchauffe, disque plein, fin de partie)",
         "Nouveau : mini-fenêtre toujours visible avec les températures",
-        "Nouveau : recherche rapide avec Ctrl+K (pages, profils, sons, actions)",
+        "Nouveau : recherche rapide avec Ctrl+K (pages, profils, actions)",
         "Nouveau : page Diagnostic pour voir si tout est bien branché (capteurs, micro, Stream Deck)",
         "Menu rangé par thème, et chaque page a une phrase d'explication sous son titre",
     ]),
@@ -2398,7 +1895,7 @@ class BoiteAOutils:
     def __init__(self, racine, cache=False):
         self.racine = racine
         self.icone = None                 # l'icône près de l'horloge
-        self.file_icone = queue.Queue()   # messages venant des autres « fils » (icône, téléphone, Stream Deck)
+        self.file_icone = queue.Queue()   # messages venant des autres « fils » (icône, Stream Deck)
         self.session = None               # infos de la session gaming en cours
         self.taches = {}                  # la liste « À faire » : clé -> {niveau, texte, detail, bouton, action}
         self.notifs = deque(maxlen=40)    # les dernières notifications
@@ -2408,7 +1905,6 @@ class BoiteAOutils:
         self.sous_pages = {}              # nom de page -> ses onglets
         self.mini = None
         self.maj_dispo = None
-        self.cache_au_depart = cache
         racine.title("Boîte à outils de Crz")
         if (DOSSIER_APPLI / "icone.ico").exists():   # logo de l'appli (fenêtre + barre des tâches)
             try:
@@ -2438,7 +1934,6 @@ class BoiteAOutils:
         # ----- Zone principale : en-tête + page -----
         principale = tk.Frame(racine, bg=FOND, padx=24, pady=16)
         principale.pack(side="left", fill="both", expand=True)
-        self.principale = principale
         entete = tk.Frame(principale, bg=FOND)
         entete.pack(fill="x", pady=(0, 12))
         haut = tk.Frame(entete, bg=FOND)   # 1re ligne : le titre à gauche, les boutons à droite
@@ -2470,7 +1965,7 @@ class BoiteAOutils:
 
         # ----- Les pages -----
         nav = self.navigation = Navigation(menu, zone, titre, sous_titre)
-        self.demarrer_serveur()   # pour le téléphone et le Stream Deck
+        self.demarrer_serveur()   # pour le Stream Deck
         self.preparer_stats()     # les statistiques servent à plusieurs pages
 
         def page(icone, nom, aide, constructeur, carte=True, en_bas=False):
@@ -2486,14 +1981,8 @@ class BoiteAOutils:
         nav.groupe("Jouer")
         page("🎮", "Jeux", "Lance une partie et retrouve ton temps de jeu.", self.page_jeux, carte=False)
         page("🎛", "Profils", "Un clic pour passer le PC en mode Jeu, Travail ou Silence.", self.page_profils, carte=False)
-        page("🔊", "Soundboard", "Des sons à envoyer dans Discord, comme si c'était ton micro.", self.page_soundboard)
         nav.groupe("Entretenir")
         page("🧹", "Entretien", "Faire de la place, ranger tes fichiers, voir ce qui se lance au démarrage.", self.page_entretien, carte=False)
-        nav.groupe("Outils")
-        self.coffre = None
-        page("🔐", "Coffre-fort", "Tes mots de passe, chiffrés. Toi seul peux les ouvrir.", self.page_coffre)
-        page("🔔", "Alerte prix", "Colle le lien d'un produit : je te préviens quand le prix baisse.", self.page_prix)
-        page("📱", "Téléphone", "Pilote ton PC depuis ton téléphone ou ton Stream Deck.", self.page_telephone, carte=False)
         tk.Label(menu, text=f"v{VERSION}", bg=MENU, fg="#44445e", font=police(8)).pack(side="bottom", pady=(0, 6), before=nav.pages[0][2])
         nav.quand_change = self.page_changee
         self.aller_a("Accueil")
@@ -2504,7 +1993,7 @@ class BoiteAOutils:
         racine.bind_all("<Escape>", lambda e: self.fermer_flottants(), add="+")
         racine.bind_all("<Button-1>", self.clic_ailleurs, add="+")
         racine.protocol("WM_DELETE_WINDOW", self.fermer)   # clic sur la croix
-        racine.protocol("WM_SAVE_YOURSELF", self.arret_windows)   # Windows s'éteint ou ferme la session
+        self.racine.protocol("WM_SAVE_YOURSELF", self.arret_windows)   # Tk le déclenche quand Windows s'éteint (WM_QUERYENDSESSION)
         self.lire_file_icone()
         self.racine.after(8000, lambda: self.verifier_maj_appli(au_demarrage=True))
         self.racine.after(1500, lambda: self.creer_icone(demander=False))   # l'icône sert aussi aux notifications
@@ -2713,12 +2202,9 @@ class BoiteAOutils:
             ("Action : voir les nouveautés de cette version", self.quoi_de_neuf),
             ("Action : musique, lecture / pause", lambda: touche_media("playpause")),
             ("Action : musique, morceau suivant", lambda: touche_media("suivant")),
-            ("Action : arrêter tous les sons du soundboard", stopper_sons),
         ]
         for nom, p in REGLAGES.get("profils", {}).items():
             liste.append((f"Profil : {p.get('icone', '')} {nom}", lambda n=nom: self.activer_profil(n)))
-        for son in REGLAGES.get("sons", []):
-            liste.append((f"Son : {son['nom']}", lambda s=son["id"]: threading.Thread(target=jouer_son, args=(s,), daemon=True).start()))
         return liste
 
     def basculer_palette(self):
@@ -2958,8 +2444,6 @@ class BoiteAOutils:
         if not REGLAGES["fermer_vers_icone"]:
             self.quitter()
         elif self.creer_icone():
-            if self.coffre and self.coffre.mdp_maitre:   # sécurité : on verrouille le coffre en cachant la fenêtre
-                self.coffre.verrouiller()
             self.racine.withdraw()
         else:
             self.racine.iconify()   # pas d'icône possible : on réduit dans la barre des tâches
@@ -3004,7 +2488,6 @@ class BoiteAOutils:
                                infos.get("notes", ""), "Installer", self.lancer_maj_appli)
             elif a_la_main:
                 self.toast(f"Tu as déjà la dernière version (v{VERSION})")
-            self.derniere_verif_maj = time.strftime("%H:%M")
             if not a_la_main:
                 self.racine.after(6 * 3600 * 1000, self.verifier_maj_appli)
         self.en_fond(chercher_maj, ensuite)
@@ -3078,11 +2561,11 @@ class BoiteAOutils:
     def verifier_stabilite(self):
         """Regarde si la boîte s'est arrêtée brutalement ces derniers jours (voir noter_demarrage)."""
         arrets = charger_json(FICHIER_ARRETS, [])
-        limite = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3 * 86400))
+        limite = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 7 * 86400))
         recents = [a for a in arrets if isinstance(a, dict) and str(a.get("vu", "")) >= limite and a.get("version") == VERSION]
         if len(recents) >= 2:
             self.tache("stabilite", "attention", f"La boîte à outils s'est arrêtée {len(recents)} fois sans prévenir",
-                       "Ces 3 derniers jours, avec cette version. Regarde le diagnostic.", "Diagnostic",
+                       "Ces 7 derniers jours, avec cette version. Regarde le diagnostic.", "Diagnostic",
                        lambda: self.aller_a("Santé du PC", "Diagnostic"), prevenir=False)
 
 
@@ -3112,6 +2595,30 @@ def nom_ventilo(nom):
         if n.startswith(debut):
             return propre + suffixe
     return nom
+
+
+VENTILO_LENT_RPM = 600       # en dessous (mais pas à l'arrêt), le ventilateur du processeur tourne trop doucement
+VENTILO_LENT_COMMANDE = 25   # ... alors que la carte mère lui demande au moins 25 % de vitesse
+
+
+def ventilo_du_processeur(ventilos):
+    """Le ventilateur du processeur dans la liste de lire_tout() : celui nommé « CPU Fan »,
+    sinon « Fan #1 » de la carte mère. Renvoie None s'il n'y en a pas."""
+    carte_mere = [v for v in ventilos or [] if v.get("ou") == "Carte mère"]
+    for nom in ("cpu fan", "fan #1"):
+        for v in carte_mere:
+            if str(v.get("nom", "")).strip().lower() == nom:
+                return v
+    return None
+
+
+def ventilo_trop_lent(v):
+    """True si le ventilateur tourne (plus de 0 tr/min) mais à moins de 600 tr/min alors que sa commande est d'au moins 25 %.
+    Si la commande (en %) n'est pas lisible, seule la vitesse compte."""
+    if not v or v.get("rpm") is None:
+        return False
+    commande = v.get("pct")
+    return 0 < v["rpm"] < VENTILO_LENT_RPM and (commande is None or commande >= VENTILO_LENT_COMMANDE)
 
 
 @methode
@@ -3394,7 +2901,7 @@ BoiteAOutils.etat_temperature = _etat_temperature
 def maj_mesures(self):
     def ensuite(m):
         if isinstance(m, Exception) or not m:
-            m = {"gpu": None, "ram": None, "cpu_temp": None, "cpu_usage": None, "disques": [], "hwinfo": False,
+            m = {"gpu": None, "ram": None, "cpu_temp": None, "cpu_usage": None, "disques": [], "capteurs_ok": False,
                  "reseau": None, "ventilos": [], "temps": [], "watts": {}}
         t = self.tuiles
         refroidir = lambda: self.aller_a("Santé du PC", "Refroidissement")
@@ -3460,11 +2967,11 @@ def maj_mesures(self):
         if m["disques"]:
             self.temps_disques = m["disques"]
         # --- Capteurs absents ? (on laisse 20 s au démarrage) ---
-        if not m["hwinfo"] and time.time() - self.depart > 20:
+        if not m["capteurs_ok"] and time.time() - self.depart > 20:
             self.tache("capteurs", "info", "Température du processeur indisponible",
                        "Lance LibreHardwareMonitor (avec son serveur web) pour l'avoir.", "Diagnostic",
                        lambda: self.aller_a("Santé du PC", "Diagnostic"))
-        elif m["hwinfo"]:
+        elif m["capteurs_ok"]:
             self.tache_finie("capteurs")
         # --- Ventilateurs : l'un d'eux s'est-il arrêté ? ---
         for v in m.get("ventilos", []):
@@ -3480,6 +2987,7 @@ def maj_mesures(self):
                     self.racine.bell()
             elif not arrete:
                 self.tache_finie("ventilo " + cle)
+        self.verifier_ventilo_lent(m)
         # --- Le reste de l'appli se sert de ces mesures ---
         self.dernieres_mesures = m
         self.derniere_vitesse = vitesse or getattr(self, "derniere_vitesse", None)
@@ -3495,6 +3003,21 @@ def maj_mesures(self):
             self.dessiner_refroidissement()
         self.racine.after(2000, self.maj_mesures)   # et on recommence dans 2 s
     self.en_fond(lire_tout, ensuite)
+
+
+@methode
+def verifier_ventilo_lent(self, m):
+    """Le ventilateur du processeur tourne-t-il trop doucement ? (5 relevés de suite, soit environ 10 s)"""
+    v = ventilo_du_processeur(m.get("ventilos"))
+    if v is None:
+        return
+    if self.dure("ventilo_lent", ventilo_trop_lent(v), 5):
+        self.tache("ventilo_lent", "attention", "Ventilateur du processeur trop lent",
+                   f"Il tourne à {v['rpm']:.0f} tr/min, c'est peu. Monte le minimum de ce ventilateur à 40 % "
+                   "dans le BIOS ou dans MSI Center : il ne ralentira plus autant au repos.",
+                   "Voir", lambda: self.aller_a("Santé du PC", "Refroidissement"))
+    elif v["rpm"] is not None and v["rpm"] >= VENTILO_LENT_RPM:
+        self.tache_finie("ventilo_lent")
 
 
 @methode
@@ -3720,8 +3243,6 @@ def diagnostic(appli):
     # 1. Capteurs de température
     if lire_lhm() is not None:
         points.append(("ok", "Capteurs de température", "LibreHardwareMonitor répond : températures et ventilateurs disponibles."))
-    elif lire_hwinfo() is not None:
-        points.append(("ok", "Capteurs de température", "HWiNFO partage ses mesures (attention : la version gratuite coupe le partage au bout de 12 h)."))
     else:
         points.append(("attention", "Capteurs de température",
                        "Aucun logiciel de capteurs ne répond. Lance LibreHardwareMonitor, puis Options > Remote Web Server > Run."))
@@ -3730,8 +3251,6 @@ def diagnostic(appli):
         points.append(("ok", "Carte graphique", "Lue par LibreHardwareMonitor (rien de plus ne sollicite le pilote NVIDIA)."))
     elif lire_gpu_nvml() is not None:
         points.append(("ok", "Carte graphique", "Lue directement auprès du pilote NVIDIA (rapide, sans ralentir le PC)."))
-    elif lire_gpu() is not None:
-        points.append(("ok", "Carte graphique", "Lue avec l'outil nvidia-smi (un peu plus lent que la lecture directe)."))
     else:
         points.append(("attention", "Carte graphique", "Impossible de lire la carte NVIDIA. Vérifie que son pilote est installé."))
     # 3. Micro
@@ -3755,9 +3274,9 @@ def diagnostic(appli):
         points.append(("attention", "Icône près de l'horloge", "Absente (librairies pystray et Pillow) : pas de notifications Windows."))
     # 5. Serveur local
     if appli["serveur"]:
-        points.append(("ok", "Liaison téléphone et Stream Deck", f"Le petit serveur écoute sur le port {PORT_SERVEUR}."))
+        points.append(("ok", "Liaison avec le Stream Deck", f"Le petit serveur écoute sur le port {PORT_SERVEUR}."))
     else:
-        points.append(("alerte", "Liaison téléphone et Stream Deck",
+        points.append(("alerte", "Liaison avec le Stream Deck",
                        f"Le port {PORT_SERVEUR} est déjà pris : une autre boîte à outils tourne peut-être déjà."))
     # 6. Plugin Stream Deck
     version = None
@@ -3770,7 +3289,7 @@ def diagnostic(appli):
     elif version:
         points.append(("info", "Plugin Stream Deck", f"Installé (v{version}) mais silencieux : le logiciel Stream Deck est peut-être fermé."))
     else:
-        points.append(("info", "Plugin Stream Deck", "Pas installé. Tu peux l'installer depuis la page Téléphone > Stream Deck."))
+        points.append(("info", "Plugin Stream Deck", "Pas installé. Tu peux l'installer depuis Réglages > Stream Deck."))
     # 7. Démarrage, mises à jour
     points.append(("ok", "Lancement au démarrage de Windows", "Activé." ) if LANCEUR_DEMARRAGE.exists() else
                   ("info", "Lancement au démarrage de Windows", "Désactivé (ça se change dans les Réglages)."))
@@ -4305,7 +3824,7 @@ def lancer_diagnostic(self):
             self.tache("diagnostic", "attention", "Un élément de la boîte à outils n'est pas branché", noms.capitalize() + ".",
                        "Diagnostic", lambda: self.aller_a("Santé du PC", "Diagnostic"), prevenir=False)
         else:
-            self.etats["diagnostic"] = ("ok", "Capteurs, micro, liaison téléphone et Stream Deck : tout est branché.")
+            self.etats["diagnostic"] = ("ok", "Capteurs, micro, liaison avec le Stream Deck : tout est branché.")
             self.tache_finie("diagnostic")
         self.dessiner_bilan()
     self.en_fond(lambda: diagnostic(infos), ensuite)
@@ -4783,148 +4302,6 @@ def sauver_profils(self):
 
 
 # =============================================================
-#  🔊 SOUNDBOARD
-# =============================================================
-
-@methode
-def page_soundboard(self, cadre):
-    haut = tk.Frame(cadre, bg=CARTE)
-    haut.pack(fill="x")
-    libelle(haut, "Tes sons", 13, TEXTE, True).pack(side="left")
-    Bouton(haut, "⏹ Tout arrêter", stopper_sons, "danger", petit=True).pack(side="right")
-    Bouton(haut, "➕ Ajouter un son", self.ajouter_son, "succes", petit=True).pack(side="right", padx=8)
-
-    sorties = tk.Frame(cadre, bg=CARTE)
-    sorties.pack(fill="x", pady=(10, 2))
-    libelle(sorties, "Envoyer vers Discord (câble virtuel)", 10, GRIS).grid(row=0, column=0, sticky="w", pady=3)
-    libelle(sorties, "Et l'entendre dans", 10, GRIS).grid(row=1, column=0, sticky="w", pady=3)
-    self.choix_discord = ttk.Combobox(sorties, state="readonly", width=44)
-    self.choix_ecoute = ttk.Combobox(sorties, state="readonly", width=44)
-    self.choix_discord.grid(row=0, column=1, padx=10, sticky="w")
-    self.choix_ecoute.grid(row=1, column=1, padx=10, sticky="w")
-    for c in (self.choix_discord, self.choix_ecoute):
-        c.bind("<<ComboboxSelected>>", lambda e: self.sauver_sorties())
-    Bouton(sorties, "🔄", self.lister_sorties, petit=True).grid(row=0, column=2)
-    self.aide_soundboard = libelle(cadre, "", 9, GRIS, largeur=860)
-    self.aide_soundboard.pack(fill="x", pady=(4, 10))
-    self.grille_sons = tk.Frame(cadre, bg=CARTE)
-    self.grille_sons.pack(fill="both", expand=True)
-    libelle(cadre, "Clic : jouer   ·   clic droit : renommer, volume, couleur, supprimer   ·   "
-                   "les mêmes sons sont sur le Stream Deck et le téléphone", 9, GRIS).pack(fill="x")
-    self.lister_sorties()
-    self.dessiner_sons()
-
-
-@methode
-def lister_sorties(self):
-    audio = charger_audio()
-    if not audio:
-        self.aide_soundboard.config(text="Pour commencer, clique sur « Ajouter un son » : je te proposerai d'installer les 2 petites "
-                                         "librairies nécessaires.", fg=ORANGE)
-        return
-    noms = sorties_audio(audio[0])
-    self.choix_discord.config(values=["(aucune)"] + noms)
-    self.choix_ecoute.config(values=["(sortie par défaut)", "(aucune)"] + noms)
-    self.choix_discord.set(REGLAGES.get("sortie_discord") or "(aucune)")
-    self.choix_ecoute.set(REGLAGES.get("sortie_ecoute") or "(sortie par défaut)")
-    cable = [n for n in noms if "CABLE Input" in n or "VoiceMeeter Input" in n]
-    if cable and not REGLAGES.get("sortie_discord"):
-        self.choix_discord.set(cable[0])
-        self.sauver_sorties()
-    if not cable:
-        self.aide_soundboard.config(text="Pour que Discord entende les sons, il faut un « câble audio virtuel » : installe VB-CABLE "
-                                         "(gratuit, vb-audio.com/Cable), puis relance la boîte à outils.", fg=ORANGE)
-    else:
-        self.aide_soundboard.config(text="✓ Câble virtuel trouvé. Dans Discord : Paramètres > Voix et vidéo > Périphérique d'entrée "
-                                         "= « CABLE Output ». Pour ta voix : Windows > Son > ton micro > Propriétés > Écouter > "
-                                         "coche « Écouter ce périphérique » et choisis « CABLE Input ».", fg=GRIS)
-
-
-@methode
-def sauver_sorties(self):
-    d, e = self.choix_discord.get(), self.choix_ecoute.get()
-    REGLAGES["sortie_discord"] = "" if d.startswith("(") else d
-    REGLAGES["sortie_ecoute"] = "" if e == "(sortie par défaut)" else (None if e == "(aucune)" else e)
-    enregistrer_reglages()
-
-
-@methode
-def dessiner_sons(self):
-    vider(self.grille_sons)
-    if not REGLAGES["sons"]:
-        libelle(self.grille_sons, "Aucun son pour l'instant", 13, GRIS, True).pack(pady=(40, 4))
-        libelle(self.grille_sons, "Clique sur « Ajouter un son » et choisis des fichiers .mp3, .wav ou .ogg.", 10, GRIS).pack()
-        return
-    for i, son in enumerate(REGLAGES["sons"]):
-        self.grille_sons.columnconfigure(i % 5, weight=1, uniform="s")
-        couleur = son.get("couleur", CYAN)
-        pad = tk.Label(self.grille_sons, text=son["nom"], bg=SURFACE, fg=couleur, font=police(12, True), wraplength=140,
-                       highlightthickness=2, highlightbackground=couleur, cursor="hand2", height=3)
-        pad.grid(row=i // 5, column=i % 5, sticky="nsew", padx=5, pady=5)
-        pad.bind("<Button-1>", lambda e, s=son["id"]: threading.Thread(target=jouer_son, args=(s,), daemon=True).start())
-        pad.bind("<Enter>", lambda e, w=pad, c=couleur: w.config(bg=melanger(SURFACE, c, 0.2)))
-        pad.bind("<Leave>", lambda e, w=pad: w.config(bg=SURFACE))
-        pad.bind("<Button-3>", lambda e, s=son: self.menu_son(e, s))
-
-
-@methode
-def ajouter_son(self):
-    if not charger_audio(self.racine):
-        return
-    self.lister_sorties()
-    fichiers = filedialog.askopenfilenames(title="Choisis un ou plusieurs sons",
-                                           filetypes=[("Sons", "*.mp3 *.wav *.ogg *.flac"), ("Tous", "*.*")])
-    DOSSIER_SONS.mkdir(parents=True, exist_ok=True)
-    for f in fichiers:
-        source = Path(f)
-        copie = DOSSIER_SONS / source.name   # on garde une copie, même si tu supprimes l'original
-        if not copie.exists():
-            shutil.copy2(source, copie)
-        REGLAGES["sons"].append({"id": secrets.token_hex(4), "nom": source.stem[:24], "fichier": str(copie),
-                                 "volume": 80, "couleur": COULEURS_SONS[len(REGLAGES["sons"]) % len(COULEURS_SONS)]})
-    enregistrer_reglages()
-    self.dessiner_sons()
-
-
-@methode
-def menu_son(self, evenement, son):
-    from tkinter import simpledialog
-    menu = tk.Menu(self.racine, tearoff=0, bg=CARTE, fg=TEXTE, activebackground=ACCENT, activeforeground=FOND)
-
-    def renommer():
-        nom = simpledialog.askstring("Renommer", "Nouveau nom :", initialvalue=son["nom"], parent=self.racine)
-        if nom:
-            son["nom"] = nom[:24]
-            enregistrer_reglages()
-            self.dessiner_sons()
-
-    def volume():
-        v = simpledialog.askinteger("Volume du son", "Volume de ce son (0 à 150 %) :", initialvalue=son.get("volume", 80),
-                                    minvalue=0, maxvalue=150, parent=self.racine)
-        if v is not None:
-            son["volume"] = v
-            enregistrer_reglages()
-
-    def couleur():
-        son["couleur"] = COULEURS_SONS[(COULEURS_SONS.index(son.get("couleur", CYAN)) + 1) % len(COULEURS_SONS)] \
-            if son.get("couleur") in COULEURS_SONS else CYAN
-        enregistrer_reglages()
-        self.dessiner_sons()
-
-    def supprimer_son():
-        if messagebox.askyesno("Supprimer", f"Retirer « {son['nom']} » du soundboard ?"):
-            REGLAGES["sons"].remove(son)
-            enregistrer_reglages()
-            self.dessiner_sons()
-    menu.add_command(label="✏️ Renommer", command=renommer)
-    menu.add_command(label="🔉 Volume de ce son", command=volume)
-    menu.add_command(label="🎨 Changer la couleur", command=couleur)
-    menu.add_separator()
-    menu.add_command(label="🗑 Supprimer", command=supprimer_son)
-    menu.tk_popup(evenement.x_root, evenement.y_root)
-
-
-# =============================================================
 #  🧹 ENTRETIEN  -  nettoyer, ranger, démarrage de Windows
 # =============================================================
 
@@ -5330,139 +4707,24 @@ def afficher_rapport(self):
 
 
 # =============================================================
-#  🔐 COFFRE-FORT et 🔔 ALERTE PRIX
+#  🎛 STREAM DECK  (l'onglet « Stream Deck » de la page Réglages)
 # =============================================================
 
 @methode
-def page_coffre(self, cadre):
-    self.coffre = Coffre(cadre, self.racine)
-
-
-@methode
-def page_prix(self, cadre):
-    libelle(cadre, "Surveiller un prix", 13, TEXTE, True).pack(fill="x")
-    libelle(cadre, "1. Colle le lien de la page du produit.   2. Écris le prix que tu vises.   3. Laisse la boîte à outils ouverte "
-                   "(ou près de l'horloge) : elle vérifie régulièrement et te prévient.", 9, GRIS, largeur=860).pack(fill="x", pady=(2, 12))
-    petit_titre(cadre, "Lien de la page du produit").pack(fill="x")
-    self.champ_url = champ(cadre, 60, valeur=REGLAGES.get("prix_url", ""))
-    self.champ_url.pack(fill="x", ipady=6, pady=(2, 10))
-    petit_titre(cadre, "Me prévenir quand le prix passe sous (en euros)").pack(fill="x")
-    self.champ_cible = champ(cadre, 12, valeur=REGLAGES.get("prix_cible", ""))
-    self.champ_cible.pack(anchor="w", ipady=6, pady=(2, 12))
-    self.btn_surveiller = Bouton(cadre, "🔔 Surveiller ce prix", self.basculer_surveillance, "principal")
-    self.btn_surveiller.pack(anchor="w")
-    self.info_prix = libelle(cadre, "", 11, TEXTE, largeur=860)
-    self.info_prix.pack(fill="x", pady=(14, 0))
-    libelle(cadre, "Certains sites (Amazon surtout) bloquent ce genre de lecture automatique : si aucun prix n'est trouvé, "
-                   "essaie le lien d'une autre boutique.", 9, GRIS, largeur=860).pack(fill="x", pady=(6, 0))
-    self.surveillance = False
-    self.prochaine_verif = None
-
-
-@methode
-def basculer_surveillance(self):
-    if self.surveillance:
-        self.surveillance = False
-        if self.prochaine_verif:
-            self.racine.after_cancel(self.prochaine_verif)   # annule la vérif prévue
-            self.prochaine_verif = None
-        self.btn_surveiller.changer("🔔 Surveiller ce prix", "principal")
-        self.info_prix.config(text="Surveillance arrêtée.", fg=GRIS)
-        return
-    try:
-        self.cible = float(self.champ_cible.get().replace(",", ".").replace("€", "").strip())
-    except ValueError:
-        self.info_prix.config(text="Le prix visé doit être un nombre (par exemple 799).", fg=ORANGE)
-        return
-    self.url = self.champ_url.get().strip()
-    if not self.url.startswith("http"):
-        self.info_prix.config(text="Colle un lien complet, qui commence par http.", fg=ORANGE)
-        return
-    REGLAGES["prix_url"], REGLAGES["prix_cible"] = self.url, self.champ_cible.get().strip()
-    enregistrer_reglages()
-    self.surveillance = True
-    self.btn_surveiller.changer("⏹ Arrêter la surveillance", "danger")
-    self.verifier_prix()
-
-
-@methode
-def verifier_prix(self):
-    if not self.surveillance:
-        return
-    self.info_prix.config(text="Vérification du prix...", fg=GRIS)
-
-    def ensuite(prix):
-        if not self.surveillance:
-            return
-        heure = time.strftime("%H:%M")
-        if isinstance(prix, Exception):
-            self.info_prix.config(text=f"[{heure}] Page illisible : {prix}", fg=ORANGE)
-        elif prix is None:
-            self.info_prix.config(text=f"[{heure}] Pas de prix trouvé (le site bloque peut-être les lectures automatiques).", fg=ORANGE)
-        elif prix <= self.cible:
-            self.info_prix.config(text=f"[{heure}] 🎉 {prix:.2f} € : prix atteint !", fg=VERT)
-            self.basculer_surveillance()
-            self.info_prix.config(text=f"[{heure}] 🎉 {prix:.2f} € : prix atteint !", fg=VERT)
-            self.racine.bell()
-            self.notifier("Prix atteint 🎉", f"{prix:.2f} € (tu visais {self.cible:.2f} €)", "ok", lambda: self.aller_a("Alerte prix"),
-                          cle=f"prix {time.time()}")
-            return
-        else:
-            self.info_prix.config(text=f"[{heure}] {prix:.2f} € pour l'instant (tu vises {self.cible:.2f} €). "
-                                       f"Prochaine vérification dans {MINUTES_ENTRE_PRIX} min.", fg=TEXTE)
-        self.prochaine_verif = self.racine.after(MINUTES_ENTRE_PRIX * 60 * 1000, self.verifier_prix)
-    self.en_fond(lambda: trouver_prix(self.url), ensuite)
-
-
-# =============================================================
-#  📱 TÉLÉPHONE ET STREAM DECK
-# =============================================================
-
-@methode
-def page_telephone(self, cadre):
-    enregistrer_reglages()   # pour garder le même code PIN
-    onglets = self.sous_pages["Téléphone"] = Onglets(cadre)
-    onglets.pack(fill="both", expand=True)
-
-    # ----- Téléphone -----
-    tel = onglets.ajouter("Téléphone")
+def onglet_stream_deck(self, sd):
     if self.serveur is None:
-        libelle(tel, f"⚠ Le port {PORT_SERVEUR} est déjà utilisé : la boîte à outils est peut-être déjà ouverte ailleurs.",
+        libelle(sd, f"⚠ Le port {PORT_SERVEUR} est déjà utilisé : la boîte à outils est peut-être déjà ouverte ailleurs.",
                 10, ROUGE).pack(fill="x", pady=(0, 8))
-    libelle(tel, "Ton PC dans ta poche", 13, TEXTE, True).pack(fill="x")
-    libelle(tel, "Depuis le navigateur de ton téléphone : températures en direct, soundboard, profils, musique, micro, "
-                 "veille, verrouillage, extinction.", 9, GRIS, largeur=860).pack(fill="x", pady=(2, 10))
-    for numero, titre, valeur, couleur in (
-            ("1", "Connecte ton téléphone au Wi-Fi de la maison, puis ouvre cette adresse", f"http://{ip_locale()}:{PORT_SERVEUR}", CYAN),
-            ("2", "Entre ton code PIN", " ".join(REGLAGES["pin_telephone"]), ROSE)):
-        bloc = tk.Frame(tel, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, padx=14, pady=10)
-        bloc.pack(fill="x", pady=4)
-        tk.Label(bloc, text=numero, bg=melanger(SURFACE, couleur, 0.25), fg=TEXTE, font=police(12, True), width=3).pack(side="left", padx=(0, 14))
-        textes = tk.Frame(bloc, bg=SURFACE)
-        textes.pack(side="left", fill="x", expand=True)
-        libelle(textes, titre, 9, GRIS, fond=SURFACE).pack(fill="x")
-        libelle(textes, valeur, 20, couleur, True, SURFACE).pack(fill="x")
-    bloc = tk.Frame(tel, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, padx=14, pady=10)
-    bloc.pack(fill="x", pady=4)
-    tk.Label(bloc, text="3", bg=melanger(SURFACE, VIOLET, 0.25), fg=TEXTE, font=police(12, True), width=3).pack(side="left", padx=(0, 14))
-    libelle(bloc, "Dans le menu du navigateur (⋮ ou Partager), choisis « Ajouter à l'écran d'accueil » : tu auras une vraie icône.",
-            10, TEXTE, fond=SURFACE, largeur=760).pack(side="left", fill="x")
-    libelle(tel, "Si Windows demande l'autorisation du pare-feu au premier lancement, coche « Réseaux privés ». "
-                 "Le code PIN empêche les autres appareils du Wi-Fi de piloter ton PC.", 9, GRIS, largeur=860).pack(fill="x", pady=(8, 0))
-
-    # ----- Stream Deck -----
-    sd = onglets.ajouter("Stream Deck")
     tete = tk.Frame(sd, bg=CARTE)
     tete.pack(fill="x")
     libelle(tete, "Plugin Stream Deck", 13, TEXTE, True).pack(side="left")
     Bouton(tete, "⬇ Installer ou réinstaller le plugin", self.installer_plugin, "principal", petit=True).pack(side="right")
     self.info_plugin = libelle(sd, "", 10, GRIS, largeur=860)
     self.info_plugin.pack(fill="x", pady=(2, 10))
-    petit_titre(sd, "Les 5 touches disponibles").pack(fill="x", pady=(0, 4))
+    petit_titre(sd, "Les 4 touches disponibles").pack(fill="x", pady=(0, 4))
     for nom, detail, couleur in (("Capteur", "Affiche une mesure en direct : température ou charge du processeur, de la carte graphique, mémoire, connexion.", CYAN),
                                  ("Micro", "Coupe ou réactive ton micro. La touche devient rouge quand il est coupé.", ROSE),
                                  ("Profil", "Active un profil (Jeu, Travail, Silence).", VIOLET),
-                                 ("Son", "Joue un son de ton soundboard, dans Discord aussi.", VERT),
                                  ("Musique", "Lecture / pause, morceau suivant ou précédent, volume de la musique.", ORANGE)):
         ligne = tk.Frame(sd, bg=CARTE)
         ligne.pack(fill="x", pady=3)
@@ -5470,35 +4732,8 @@ def page_telephone(self, cadre):
         libelle(ligne, detail, 10, TEXTE, largeur=720).pack(side="left", fill="x")
     libelle(sd, "Dans le logiciel Stream Deck, ces touches sont dans la catégorie « Capteurs de Crz » (colonne de droite) : "
                 "glisse-les sur ton Stream Deck. Le profil « Perfs » est livré avec le plugin.", 9, GRIS, largeur=860).pack(fill="x", pady=(10, 0))
-
-    # ----- Allumer à distance -----
-    wol = onglets.ajouter("Allumer à distance")
-    libelle(wol, "Allumer le PC depuis ton téléphone (Wake-on-LAN)", 13, TEXTE, True).pack(fill="x")
-    libelle(wol, "Un PC éteint ne peut pas répondre lui-même : c'est une appli « Wake On LAN » sur ton téléphone qui lui envoie "
-                 "un signal de réveil par le câble réseau. Il faut l'adresse de ta carte réseau (adresse MAC) :", 9, GRIS,
-            largeur=860).pack(fill="x", pady=(2, 8))
-    self.info_mac = libelle(wol, "Recherche de ta carte réseau...", 12, TEXTE, True)
-    self.info_mac.pack(fill="x", pady=(0, 10))
-    petit_titre(wol, "À régler une seule fois").pack(fill="x", pady=(0, 4))
-    for etape in ("BIOS de la carte mère MSI (touche Suppr au démarrage) : Settings > Advanced > Wake Up Event Setup > "
-                  "« Resume By PCI-E Device » sur Enabled, et « ErP Ready » sur Disabled.",
-                  "Windows : Gestionnaire de périphériques > Cartes réseau > ta carte > Gestion de l'alimentation : coche "
-                  "« Autoriser ce périphérique à sortir l'ordinateur du mode veille » et « paquet magique ».",
-                  "Windows : désactive le « démarrage rapide » (Options d'alimentation > Choisir l'action des boutons d'alimentation).",
-                  "Téléphone : installe une appli « Wake On LAN », ajoute ton PC avec l'adresse MAC ci-dessus. "
-                  "Le PC doit être branché en câble Ethernet (pas en Wi-Fi)."):
-        ligne = tk.Frame(wol, bg=CARTE)
-        ligne.pack(fill="x", pady=3)
-        tk.Label(ligne, text="•", bg=CARTE, fg=ACCENT, font=police(11, True)).pack(side="left", anchor="n", padx=(0, 8))
-        libelle(ligne, etape, 10, TEXTE, largeur=820).pack(side="left", fill="x")
-
-    def ensuite(cartes):
-        if isinstance(cartes, Exception) or not cartes:
-            self.info_mac.config(text="Adresse MAC introuvable (tape « getmac » dans PowerShell pour la voir).", fg=GRIS)
-        else:
-            self.info_mac.config(text="   ·   ".join(f"{nom[:44]} : {mac}" for nom, mac in cartes), fg=VERT)
-    self.en_fond(adresses_mac, ensuite)
-    onglets.quand_change = lambda nom: nom == "Stream Deck" and self.afficher_plugin()
+    libelle(sd, "Le plugin parle à la boîte à outils par ce PC seulement (adresse 127.0.0.1) : rien n'est ouvert sur ton réseau.",
+            9, GRIS, largeur=860).pack(fill="x", pady=(6, 0))
     self.racine.after(12000, self.afficher_plugin)
 
 
@@ -5592,8 +4827,6 @@ def page_reglages(self, cadre):
     ligne(general, "dossier_a_ranger", "dossier", "Dossier à ranger", "Utilisé par Entretien > Ranger.")
     ligne(general, "dossier_medal", "dossier", "Dossier des clips Medal", "Utilisé par Entretien > Nettoyer.")
     ligne(general, "jours_clips", "nombre", "Garder les clips Medal pendant (jours)", "Les clips plus vieux sont proposés au nettoyage.")
-    ligne(general, "verrou_minutes", "nombre", "Verrouiller le coffre-fort après (minutes)", "Sans rien toucher, le coffre se referme tout seul.")
-    ligne(general, "minutes_entre_prix", "nombre", "Alerte prix : vérifier toutes les (minutes)")
 
     alertes = onglets.ajouter("Alertes")
     barre_enregistrer(alertes)
@@ -5632,6 +4865,10 @@ def page_reglages(self, cadre):
             self.choix_micro.config(values=["Micro par défaut de Windows"] + [nom for nom, _ in micros])
     self.en_fond(lister_micros, remplir_micros)
 
+    stream_deck = onglets.ajouter("Stream Deck")
+    self.onglet_stream_deck(stream_deck)
+    onglets.quand_change = lambda nom: nom == "Stream Deck" and self.afficher_plugin()
+
     apropos = onglets.ajouter("À propos")
     libelle(apropos, f"Boîte à outils de Crz · version {VERSION}", 14, TEXTE, True).pack(fill="x")
     libelle(apropos, "Faite en Python avec tkinter, la librairie de fenêtres livrée avec Python. Tout le code est dans un seul "
@@ -5643,8 +4880,7 @@ def page_reglages(self, cadre):
     Bouton(boutons, "🩺 Diagnostic", lambda: self.aller_a("Santé du PC", "Diagnostic")).pack(side="left", padx=(0, 8))
     Bouton(boutons, "📁 Ouvrir le dossier des données", self.ouvrir_dossier_appli).pack(side="left")
     petit_titre(apropos, "Où sont rangées tes données").pack(fill="x", pady=(18, 4))
-    for nom, chemin in (("Réglages, statistiques, journal", DOSSIER_APPLI), ("Coffre-fort (chiffré)", FICHIER_COFFRE.parent),
-                        ("Ce programme", Path(__file__).resolve())):
+    for nom, chemin in (("Réglages, statistiques, journal", DOSSIER_APPLI), ("Ce programme", Path(__file__).resolve())):
         l = tk.Frame(apropos, bg=CARTE)
         l.pack(fill="x", pady=2)
         libelle(l, nom, 10, TEXTE, width=30).pack(side="left")
@@ -5702,285 +4938,17 @@ def sauver_reglages(self):
 
 
 # =============================================================
-#  🔐 COFFRE-FORT  -  l'affichage
-#  (le chiffrement lui-même est plus haut : chiffrer, dechiffrer...)
-# =============================================================
-
-class Coffre:
-    """La page du coffre-fort. Deux écrans : verrouillé (on tape le mot de passe maître) ou ouvert (la liste)."""
-
-    def __init__(self, cadre, racine):
-        self.cadre = cadre
-        self.racine = racine
-        self.mdp_maitre = None
-        self.entrees = []          # liste de dictionnaires {site, identifiant, mdp, note}
-        self.minuteur_verrou = None
-        self.minuteur_presse_papier = None
-        # Chaque clic ou touche remet à zéro le compte à rebours du verrouillage
-        racine.bind_all("<Any-KeyPress>", self.activite, add="+")
-        racine.bind_all("<Any-Button>", self.activite, add="+")
-        self.ecran_verrouille()
-
-    def dire(self, texte, couleur=GRIS):
-        """Écrit un message dans la ligne d'information en bas du coffre."""
-        if getattr(self, "info", None) is not None and self.info.winfo_exists():
-            self.info.config(text=texte, fg=couleur)
-
-    # ---------- ÉCRAN VERROUILLÉ ----------
-
-    def ecran_verrouille(self):
-        vider(self.cadre)
-        self.mdp_maitre = None
-        self.entrees = []
-        self.info = None
-        premiere_fois = not FICHIER_COFFRE.exists()
-
-        boite = tk.Frame(self.cadre, bg=CARTE)
-        boite.place(relx=0.5, rely=0.45, anchor="center")
-        tk.Label(boite, text="🔐", bg=CARTE, fg=TEXTE, font=police(30)).pack()
-        libelle(boite, "Crée ton mot de passe maître" if premiere_fois else "Coffre verrouillé", 14, TEXTE, True).pack(pady=(0, 2))
-        libelle(boite, "C'est le seul mot de passe à retenir : il ouvre tous les autres." if premiere_fois
-                else "Tape ton mot de passe maître pour voir tes mots de passe.", 9, GRIS).pack(pady=(0, 10))
-
-        self.champ_maitre = champ(boite, 30, cache=True)
-        self.champ_maitre.pack(ipady=6, pady=3)
-        self.champ_maitre.bind("<Return>", lambda e: self.deverrouiller())
-        self.champ_confirm = None
-        if premiere_fois:
-            libelle(boite, "Écris-le une deuxième fois :", 9, GRIS).pack(pady=(6, 0))
-            self.champ_confirm = champ(boite, 30, cache=True)
-            self.champ_confirm.pack(ipady=6, pady=3)
-            self.champ_confirm.bind("<Return>", lambda e: self.deverrouiller())
-            tk.Label(boite, text="Si tu l'oublies, personne ne pourra ouvrir le coffre.\n"
-                                 "Choisis une phrase longue que tu retiens facilement (10 caractères minimum).",
-                     bg=CARTE, fg=ORANGE, font=police(9), justify="center").pack(pady=6)
-
-        self.info_verrou = tk.Label(boite, text="", bg=CARTE, fg=ROUGE, font=police(10))
-        self.info_verrou.pack(pady=3)
-        Bouton(boite, "Créer le coffre" if premiere_fois else "Déverrouiller", self.deverrouiller, "principal").pack(pady=(2, 0))
-        libelle(boite, f"Le coffre se referme tout seul après {VERROU_MINUTES} min sans rien toucher, "
-                       "et dès que la fenêtre est cachée.", 8, ETEINT).pack(pady=(14, 0))
-
-    def deverrouiller(self):
-        if AESGCM is None and not charger_crypto():
-            if messagebox.askyesno("Coffre-fort", "Il manque la librairie « cryptography » pour chiffrer.\n\n"
-                                                  "L'installer maintenant ? (environ 30 secondes)"):
-                self.info_verrou.config(text="Installation...", fg=GRIS)
-                self.racine.update()
-                if installer_crypto() and charger_crypto():
-                    self.info_verrou.config(text="Installé", fg=VERT)
-                else:
-                    self.info_verrou.config(text="Échec. Dans PowerShell : python -m pip install cryptography", fg=ROUGE)
-                    return
-            else:
-                return
-
-        mdp = self.champ_maitre.get()
-        if self.champ_confirm is not None:   # création du coffre
-            if len(mdp) < 10:
-                self.info_verrou.config(text="Au moins 10 caractères, s'il te plaît.", fg=ROUGE)
-                return
-            if mdp != self.champ_confirm.get():
-                self.info_verrou.config(text="Les deux mots de passe ne sont pas pareils.", fg=ROUGE)
-                return
-            sauvegarder_coffre([], mdp)
-            self.entrees = []
-        else:
-            self.info_verrou.config(text="Ouverture...", fg=GRIS)
-            self.racine.update()
-            try:
-                self.entrees = dechiffrer(FICHIER_COFFRE.read_bytes(), mdp)
-            except InvalidTag:
-                self.info_verrou.config(text="Mauvais mot de passe.", fg=ROUGE)
-                self.champ_maitre.delete(0, "end")
-                return
-            except Exception as e:
-                self.info_verrou.config(text=f"Coffre illisible : {e}", fg=ROUGE)
-                return
-        self.mdp_maitre = mdp
-        self.ecran_principal()
-        self.activite()
-
-    # ---------- VERROUILLAGE AUTO ----------
-
-    def activite(self, _evenement=None):
-        if self.mdp_maitre is None:
-            return
-        if self.minuteur_verrou:
-            self.racine.after_cancel(self.minuteur_verrou)
-        self.minuteur_verrou = self.racine.after(VERROU_MINUTES * 60 * 1000, self.verrouiller)
-
-    def verrouiller(self):
-        fenetre = getattr(self, "fenetre", None)   # ferme la fenêtre d'édition restée ouverte
-        if fenetre is not None and fenetre.winfo_exists():
-            fenetre.destroy()
-        self.ecran_verrouille()
-
-    # ---------- COFFRE OUVERT ----------
-
-    def ecran_principal(self):
-        vider(self.cadre)
-        haut = tk.Frame(self.cadre, bg=CARTE)
-        haut.pack(fill="x", pady=(0, 10))
-        libelle(haut, "Chercher", 9, GRIS).pack(side="left")
-        self.recherche = tk.StringVar()
-        self.recherche.trace_add("write", lambda *a: self.rafraichir())
-        zone = champ(haut, 26)
-        zone.config(textvariable=self.recherche)
-        zone.pack(side="left", ipady=5, padx=8)
-        self.compte = libelle(haut, "", 9, GRIS)
-        self.compte.pack(side="left", padx=6)
-        Bouton(haut, "Verrouiller", self.verrouiller, "danger", petit=True).pack(side="right")
-
-        self.liste = ttk.Treeview(self.cadre, columns=("site", "identifiant", "note"), show="headings", height=8)
-        for col, titre, larg in [("site", "Site ou appli", 220), ("identifiant", "Identifiant", 260), ("note", "Note", 260)]:
-            self.liste.heading(col, text=titre, anchor="w")
-            self.liste.column(col, width=larg, anchor="w")
-        self.liste.pack(fill="both", expand=True)
-        self.liste.bind("<Double-1>", lambda e: self.copier("mdp"))
-
-        bas = tk.Frame(self.cadre, bg=CARTE)
-        bas.pack(fill="x", pady=(10, 0))
-        Bouton(bas, "+ Ajouter", lambda: self.fenetre_edition(None), "succes").pack(side="left", padx=(0, 6))
-        Bouton(bas, "Copier le mot de passe", lambda: self.copier("mdp"), "principal").pack(side="left", padx=(0, 6))
-        Bouton(bas, "Copier l'identifiant", lambda: self.copier("identifiant")).pack(side="left", padx=(0, 6))
-        Bouton(bas, "Modifier", self.modifier).pack(side="left", padx=(0, 6))
-        Bouton(bas, "Supprimer", self.supprimer).pack(side="right")
-        self.info = libelle(self.cadre, "", 9, GRIS)
-        self.info.pack(fill="x", pady=(8, 0))
-        self.rafraichir()
-        self.dire("Astuce : double-clic sur une ligne pour copier son mot de passe." if self.entrees
-                  else "Ton coffre est vide. Clique sur « + Ajouter » pour ranger ton premier mot de passe.")
-
-    def rafraichir(self):
-        """Réaffiche la liste en tenant compte de la recherche."""
-        self.liste.delete(*self.liste.get_children())
-        filtre = sans_accents(self.recherche.get())
-        montres = 0
-        for i, e in sorted(enumerate(self.entrees), key=lambda x: x[1]["site"].lower()):
-            if filtre in sans_accents(e["site"]) or filtre in sans_accents(e["identifiant"]) or filtre in sans_accents(e.get("note", "")):
-                self.liste.insert("", "end", iid=str(i), values=(e["site"], e["identifiant"], e.get("note", "")))
-                montres += 1
-        total = len(self.entrees)
-        if filtre:
-            self.compte.config(text=f"{montres} sur {total}")
-        else:
-            self.compte.config(text=f"{total} mot{'s' if total > 1 else ''} de passe")
-
-    def selection(self):
-        choix = self.liste.selection()
-        if not choix:
-            self.dire("Sélectionne d'abord une ligne dans la liste.", ORANGE)
-            return None
-        return int(choix[0])
-
-    def enregistrer(self):
-        sauvegarder_coffre(self.entrees, self.mdp_maitre)
-        self.rafraichir()
-
-    def copier(self, quoi):
-        i = self.selection()
-        if i is None:
-            return
-        self.racine.clipboard_clear()
-        self.racine.clipboard_append(self.entrees[i][quoi])
-        if quoi == "mdp":
-            self.dire(f"Mot de passe de « {self.entrees[i]['site']} » copié. Il sera effacé du presse-papier dans "
-                      f"{EFFACER_PRESSE_PAPIER} s.", VERT)
-            if self.minuteur_presse_papier:
-                self.racine.after_cancel(self.minuteur_presse_papier)
-            self.minuteur_presse_papier = self.racine.after(EFFACER_PRESSE_PAPIER * 1000, self.effacer_presse_papier)
-        else:
-            self.dire("Identifiant copié.", VERT)
-
-    def effacer_presse_papier(self):
-        self.minuteur_presse_papier = None
-        self.racine.clipboard_clear()
-        self.racine.clipboard_append("")
-        if self.mdp_maitre:
-            self.dire("Presse-papier effacé.")
-
-    def supprimer(self):
-        i = self.selection()
-        if i is None:
-            return
-        if messagebox.askyesno("Supprimer", f"Supprimer « {self.entrees[i]['site']} » du coffre ?\n\nC'est définitif."):
-            del self.entrees[i]
-            self.enregistrer()
-            self.dire("Supprimé.")
-
-    def modifier(self):
-        i = self.selection()
-        if i is not None:
-            self.fenetre_edition(i)
-
-    def fenetre_edition(self, index):
-        """Petite fenêtre pour ajouter (index=None) ou modifier une entrée."""
-        e = self.entrees[index] if index is not None else {"site": "", "identifiant": "", "mdp": "", "note": ""}
-        self.fenetre = f = tk.Toplevel(self.racine, bg=CARTE, padx=22, pady=18)
-        f.title("Modifier" if index is not None else "Ajouter un mot de passe")
-        f.transient(self.racine)
-        f.resizable(False, False)
-        f.grab_set()   # on ne peut pas cliquer ailleurs tant qu'elle est ouverte
-
-        champs = {}
-        for ligne, (cle, titre) in enumerate([("site", "Site ou appli"), ("identifiant", "Identifiant ou e-mail"),
-                                              ("mdp", "Mot de passe"), ("note", "Note (facultatif)")]):
-            libelle(f, titre, 10, GRIS).grid(row=ligne, column=0, sticky="w", pady=6)
-            c = champ(f, 30, cache=(cle == "mdp"), valeur=e.get(cle, ""))
-            c.grid(row=ligne, column=1, ipady=5, padx=10)
-            champs[cle] = c
-
-        def basculer_affichage():
-            cache = not champs["mdp"].cget("show")
-            champs["mdp"].config(show="•" if cache else "")
-            oeil.changer("Afficher" if cache else "Cacher")
-
-        def generer():
-            champs["mdp"].delete(0, "end")
-            champs["mdp"].insert(0, generer_mdp())
-            champs["mdp"].config(show="")
-            oeil.changer("Cacher")
-
-        outils = tk.Frame(f, bg=CARTE)
-        outils.grid(row=2, column=2, sticky="w")
-        oeil = Bouton(outils, "Afficher", basculer_affichage, petit=True)
-        oeil.pack(side="left", padx=(0, 6))
-        Bouton(outils, "Générer", generer, petit=True).pack(side="left")
-        libelle(f, "« Générer » invente un mot de passe solide de 20 caractères.", 9, GRIS).grid(
-            row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        erreur = libelle(f, "", 9, ROUGE)
-        erreur.grid(row=5, column=0, columnspan=3, sticky="w")
-
-        def valider(_evt=None):
-            nouveau = {cle: c.get().strip() for cle, c in champs.items()}
-            nouveau["mdp"] = champs["mdp"].get()   # on ne retire pas les espaces d'un mdp
-            if not nouveau["site"] or not nouveau["mdp"]:
-                erreur.config(text="Il faut au moins un site et un mot de passe.")
-                return
-            if index is None:
-                self.entrees.append(nouveau)
-            else:
-                self.entrees[index] = nouveau
-            self.enregistrer()
-            self.dire(f"« {nouveau['site']} » enregistré (chiffré).", VERT)
-            f.destroy()
-
-        bas = tk.Frame(f, bg=CARTE)
-        bas.grid(row=6, column=0, columnspan=3, sticky="e", pady=(12, 0))
-        Bouton(bas, "Annuler", f.destroy).pack(side="left", padx=(0, 8))
-        Bouton(bas, "Enregistrer", valider, "succes").pack(side="left")
-        f.bind("<Return>", valider)
-        f.bind("<Escape>", lambda e: f.destroy())
-        champs["site"].focus_set()
-
-
-# =============================================================
 #  📡 LE PETIT SERVEUR
-#  Il répond au téléphone (avec le PIN) et au Stream Deck (sans PIN,
-#  parce qu'il est sur le PC lui-même). Il tourne dans son propre fil :
-#  il ne touche jamais à l'affichage, il dépose ses demandes dans la file.
+#  Il ne répond qu'à ce PC (adresse 127.0.0.1) : c'est le plugin Stream Deck
+#  qui lui parle. Il refuse aussi les pages web ouvertes dans le navigateur
+#  (en-tête Origin d'un autre site) et les noms de serveur inconnus (en-tête Host).
+#  Il tourne dans son propre fil : il ne touche jamais à l'affichage,
+#  il dépose ses demandes dans la file.
 # =============================================================
+
+HOTES_AUTORISES = ("127.0.0.1", "localhost")
+ORIGINES_AUTORISEES = re.compile(r"https?://(127\.0\.0\.1|localhost)(:\d+)?", re.IGNORECASE)
+
 
 class ServeurLocal(http.server.BaseHTTPRequestHandler):
     app = None   # la boîte à outils, remplie au démarrage
@@ -5991,57 +4959,55 @@ class ServeurLocal(http.server.BaseHTTPRequestHandler):
     def local(self):
         return self.client_address[0] in ("127.0.0.1", "::1")
 
-    def autorise(self):
-        """Le PC lui-même (Stream Deck) n'a pas besoin du PIN, le téléphone oui."""
-        return self.local() or self.headers.get("X-Pin") == REGLAGES["pin_telephone"]
+    def origine_autorisee(self):
+        """False si la demande ne vient pas du plugin : elle porte un en-tête Origin d'un autre site
+        (une page web qui essaie de piloter le PC), ou un en-tête Host qui n'est pas celui de ce PC.
+        Le plugin Stream Deck n'envoie pas d'Origin ; « null » et 127.0.0.1 / localhost passent."""
+        nom, _, port = (self.headers.get("Host") or "").strip().lower().partition(":")
+        if nom not in HOTES_AUTORISES or port not in ("", str(PORT_SERVEUR)):
+            return False
+        origine = self.headers.get("Origin")
+        if origine is None or origine.strip().lower() == "null":
+            return True
+        return ORIGINES_AUTORISEES.fullmatch(origine.strip()) is not None
 
     def repondre(self, code, donnees, type_contenu="application/json; charset=utf-8"):
         corps = donnees if isinstance(donnees, bytes) else json.dumps(donnees, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", type_contenu)
-        self.send_header("Access-Control-Allow-Origin", "*")   # le réglage du Stream Deck peut lire la liste des sons
-        self.send_header("Access-Control-Allow-Headers", "X-Pin")
         self.end_headers()
         self.wfile.write(corps)
 
     def do_OPTIONS(self):
+        if not self.origine_autorisee():
+            self.repondre(403, {"erreur": "interdit"})
+            return
         self.repondre(204, b"")
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
-            self.repondre(200, PAGE_TELEPHONE.encode("utf-8"), "text/html; charset=utf-8")
-            return
-        if not self.autorise():
-            self.repondre(401, {"erreur": "PIN"})
+        if not self.origine_autorisee():
+            self.repondre(403, {"erreur": "interdit"})
             return
         if self.path == "/api/etat":
             if self.local():
                 self.app.dernier_appel_local = time.time()   # le Stream Deck vient de passer : il est bien relié
             self.repondre(200, self.app.etat_pour_api())
-        elif self.path == "/api/sons":
-            self.repondre(200, [{"id": s["id"], "nom": s["nom"], "couleur": s.get("couleur", CYAN)}
-                                for s in REGLAGES["sons"]])
         elif self.path == "/api/profils":
             self.repondre(200, {"profils": list(REGLAGES["profils"]), "actif": REGLAGES.get("profil_actif")})
         else:
             self.repondre(404, {"erreur": "inconnu"})
 
     def do_POST(self):
-        if not self.autorise():
-            self.repondre(401, {"erreur": "PIN"})
+        if not self.origine_autorisee():
+            self.repondre(403, {"erreur": "interdit"})
             return
-        morceaux = self.path.strip("/").split("/")   # ex : api/son/ab12cd34
+        morceaux = self.path.strip("/").split("/")   # ex : api/profil/Jeu
         if len(morceaux) != 3 or morceaux[0] != "api":
             self.repondre(404, {"erreur": "inconnu"})
             return
         _, quoi, valeur = morceaux
-        valeur = urllib.request.unquote(valeur)
-        if quoi == "son":
-            self.repondre(200, {"ok": jouer_son(valeur)})
-        elif quoi == "stop":
-            stopper_sons()
-            self.repondre(200, {"ok": True})
-        elif quoi == "media":
+        valeur = urllib.parse.unquote(valeur)
+        if quoi == "media":
             self.repondre(200, {"ok": touche_media(valeur)})
         elif quoi == "micro" and valeur in ("basculer", "couper", "activer"):
             coupe = micro(valeur)
@@ -6067,7 +5033,7 @@ def demarrer_serveur(self):
     ServeurLocal.app = self
     self.dernier_appel_local = 0
     try:
-        self.serveur = http.server.ThreadingHTTPServer(("0.0.0.0", PORT_SERVEUR), ServeurLocal)
+        self.serveur = http.server.ThreadingHTTPServer(("127.0.0.1", PORT_SERVEUR), ServeurLocal)
     except OSError:
         self.serveur = None   # port déjà pris (boîte à outils déjà ouverte ?)
         return
@@ -6077,7 +5043,7 @@ def demarrer_serveur(self):
 
 @methode
 def etat_pour_api(self):
-    """Ce que le téléphone et le Stream Deck reçoivent quand ils demandent « comment va le PC ? »."""
+    """Ce que le Stream Deck reçoit quand il demande « comment va le PC ? »."""
     m = getattr(self, "dernieres_mesures", {}) or {}
     return {
         "version": VERSION,
@@ -6085,7 +5051,7 @@ def etat_pour_api(self):
         "gpu": m.get("gpu"), "ram": m.get("ram"), "reseau": getattr(self, "derniere_vitesse", None),
         "jeu": getattr(self, "jeu_actuel", None), "profil": REGLAGES.get("profil_actif"),
         "musique": getattr(self, "titre_musique", None), "micro_coupe": getattr(self, "micro_coupe", None),
-        "sons": [{"id": s["id"], "nom": s["nom"], "couleur": s.get("couleur", CYAN)} for s in REGLAGES["sons"]],
+        "sons": [],   # (l'ancien plugin Stream Deck attend encore cette clé)
         "profils": list(REGLAGES["profils"]),
     }
 
@@ -6109,12 +5075,25 @@ def deja_ouverte():
         return False   # personne ne répond : on démarre normalement
 
 
+CLES_INUTILES = {"sons", "pin_telephone", "verrou_minutes", "minutes_entre_prix"}
+CLES_INUTILES_DEBUT = ("sortie_", "prix_")
+
+
 def preparer_reglages():
     """Charge les réglages et remet d'aplomb ce qui vient des anciennes versions."""
     global ACCENT
     charger_reglages()
     for profil in REGLAGES["profils"].values():   # les profils ne touchent plus au son du casque
         profil["volume"] = None
+    # Réglages des fonctions retirées en 3.1 (soundboard, téléphone, coffre-fort, alerte prix) : on fait le ménage
+    inutiles = [cle for cle in REGLAGES if cle in CLES_INUTILES or cle.startswith(CLES_INUTILES_DEBUT)]
+    for cle in inutiles:
+        del REGLAGES[cle]
+    if inutiles:
+        try:
+            enregistrer_reglages()
+        except OSError:
+            pass
     if REGLAGES.get("profil_en_jeu") not in REGLAGES["profils"]:
         REGLAGES["profil_en_jeu"] = next(iter(REGLAGES["profils"]), "")
     ACCENT = COULEURS_ACCENT.get(REGLAGES.get("accent"), CYAN)   # la couleur des boutons choisie dans Réglages
@@ -6176,7 +5155,6 @@ if __name__ == "__main__":
     try:
         preparer_reglages()
         try:   # pour que Windows montre le logo de l'appli (et pas la plume Python) dans la barre des tâches
-            import ctypes
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Crz.BoiteAOutils")
         except (AttributeError, OSError):
             pass
