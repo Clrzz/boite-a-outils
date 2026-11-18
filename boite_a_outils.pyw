@@ -61,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.1.1"
+VERSION = "3.1.2"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -1543,6 +1543,18 @@ import http.server
 PORT_SERVEUR = 8765
 
 
+def eteindre_ecrans(delai=1.0):
+    """Met les écrans en veille (le PC continue de tourner). On attend un peu avant :
+    le moindre mouvement de souris juste après le clic les rallumerait aussitôt.
+    Bouger la souris ou appuyer sur une touche les rallume."""
+    def plus_tard():
+        time.sleep(delai)
+        import ctypes
+        # HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2 = éteint. PostMessage : on n'attend pas les autres fenêtres.
+        ctypes.windll.user32.PostMessageW(0xFFFF, 0x0112, 0xF170, 2)
+    threading.Thread(target=plus_tard, daemon=True).start()
+
+
 def action_pc(action):
     import ctypes
     if action == "verrouiller":
@@ -1550,6 +1562,8 @@ def action_pc(action):
     elif action == "veille":
         # SetSuspendState(hibernation=False) = vraie mise en veille
         ctypes.windll.powrprof.SetSuspendState(False, False, False)
+    elif action == "ecrans":
+        eteindre_ecrans()
     elif action == "eteindre":
         subprocess.run(["shutdown", "/s", "/t", "10"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     elif action == "redemarrer":
@@ -2195,6 +2209,7 @@ class BoiteAOutils:
             ("Action : couper ou réactiver le micro", self.basculer_micro),
             ("Action : mode jeu (profil Jeu)", self.mode_jeu),
             ("Action : montrer ou cacher la mini-fenêtre", self.basculer_mini),
+            ("Action : mettre les écrans en veille", eteindre_ecrans),
             ("Action : vérifier les mises à jour (pilotes et applis)", lambda: (self.aller_a("Santé du PC", "Mises à jour"), self.verifier_maj(), self.verifier_pilotes())),
             ("Action : analyser ce qui peut être nettoyé", lambda: (self.aller_a("Entretien", "Nettoyer"), self.analyser())),
             ("Action : chercher une mise à jour de la boîte à outils", lambda: self.verifier_maj_appli(a_la_main=True)),
@@ -2400,6 +2415,7 @@ class BoiteAOutils:
             pystray.MenuItem("Ouvrir", lambda: envoyer("ouvrir"), default=True),
             pystray.MenuItem("Couper / réactiver le micro", lambda: envoyer("micro_basculer")),
             pystray.MenuItem("Mini-fenêtre", lambda: envoyer("mini")),
+            pystray.MenuItem("Écrans en veille", lambda: eteindre_ecrans()),
             pystray.MenuItem("Quitter", lambda: envoyer("quitter")),
         )
         try:
@@ -2687,10 +2703,14 @@ def page_accueil(self, cadre):
             ("jeu", "🎮", "Mode jeu", CYAN, self.mode_jeu, "Active le profil Jeu : plan Performances, ferme les applis choisies."),
             ("micro", "🎙", "Micro", ROSE, self.basculer_micro, "Coupe ou réactive ton micro (celui choisi dans les Réglages)."),
             ("profil", "🎛", "Profil", VIOLET, self.menu_profils, "Change de profil en un clic."),
-            ("mini", "▣", "Mini-fenêtre", VERT, self.basculer_mini, "Une petite fenêtre toujours visible avec les températures."))):
+            ("mini", "▣", "Mini-fenêtre", VERT, self.basculer_mini, "Une petite fenêtre toujours visible avec les températures."),
+            ("ecrans", "🌙", "Écrans en veille", ORANGE, eteindre_ecrans,
+             "Éteint tes écrans, le PC continue de tourner (téléchargements, musique…). Bouge la souris pour les rallumer."))):
         grille.columnconfigure(i % 2, weight=1, uniform="a")
         self.infos_actions[cle] = self.action_rapide(grille, icone, titre, couleur, commande, i // 2, i % 2)
         Bulle(self.infos_actions[cle].master, aide)
+    self.infos_actions["ecrans"].master.grid(columnspan=2)   # le 5e bouton prend toute la largeur
+    self.infos_actions["ecrans"].config(text="bouge la souris pour rallumer")
 
     # ----- Ligne 3 : disques, jeu, musique -----
     ligne3 = tk.Frame(cadre, bg=FOND)
@@ -5021,7 +5041,7 @@ class ServeurLocal(http.server.BaseHTTPRequestHandler):
             if valeur == "montrer":
                 self.app.file_icone.put("ouvrir")   # une 2e boîte à outils a été lancée : on montre la 1re
             self.repondre(200, {"ok": True})
-        elif quoi == "pc" and valeur in ("veille", "verrouiller", "eteindre", "redemarrer"):
+        elif quoi == "pc" and valeur in ("veille", "verrouiller", "eteindre", "redemarrer", "ecrans"):
             self.repondre(200, {"ok": True})
             action_pc(valeur)
         else:
