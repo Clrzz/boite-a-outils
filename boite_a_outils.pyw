@@ -61,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.1.2"
+VERSION = "3.1.3"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -1543,16 +1543,72 @@ import http.server
 PORT_SERVEUR = 8765
 
 
-def eteindre_ecrans(delai=1.0):
-    """Met les écrans en veille (le PC continue de tourner). On attend un peu avant :
-    le moindre mouvement de souris juste après le clic les rallumerait aussitôt.
-    Bouger la souris ou appuyer sur une touche les rallume."""
-    def plus_tard():
-        time.sleep(delai)
+_ECRANS = {"en_cours": False}
+
+
+def eteindre_ecrans(delai=1.0, pas=0.1, renvoi=5.0, bouge_max=40, duree_max=12 * 3600):
+    """Met les écrans en veille (le PC continue de tourner) et les GARDE éteints.
+    Certains périphériques envoient de faux signaux (souris qui tremble, manette, logiciel de souris)
+    et Windows rallume alors les écrans : tant que tu ne touches vraiment à rien, on renvoie
+    l'ordre « éteins-toi » dès que Windows voit un signal, et toutes les 5 secondes.
+    On arrête dès qu'une touche ou un bouton de souris est appuyé, ou que la souris bouge de plus de 40 pixels."""
+    if _ECRANS["en_cours"]:   # déjà en train de surveiller : on renvoie juste l'ordre
+        _ECRANS["relancer"] = True
+        return
+    _ECRANS.update(en_cours=True, relancer=False)
+
+    def surveiller():
         import ctypes
-        # HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2 = éteint. PostMessage : on n'attend pas les autres fenêtres.
-        ctypes.windll.user32.PostMessageW(0xFFFF, 0x0112, 0xF170, 2)
-    threading.Thread(target=plus_tard, daemon=True).start()
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+
+        class InfoSaisie(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+        def derniere_saisie():
+            info = InfoSaisie(ctypes.sizeof(InfoSaisie), 0)
+            user32.GetLastInputInfo(ctypes.byref(info))
+            return info.dwTime
+
+        def souris():
+            pt = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(pt))
+            return pt.x, pt.y
+
+        def touche_appuyee():
+            """Vrai si une touche du clavier ou un bouton de la souris est appuyé (ou l'a été depuis la dernière fois)."""
+            return any(user32.GetAsyncKeyState(code) & 0x8001 for code in range(1, 255) if code not in (0xFF,))
+
+        def eteindre():
+            # HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2 = éteint. PostMessage : on n'attend pas les autres fenêtres.
+            user32.PostMessageW(0xFFFF, 0x0112, 0xF170, 2)
+
+        try:
+            time.sleep(delai)   # le temps de lâcher la souris et la touche après le clic
+            touche_appuyee()    # remet à zéro le « appuyé depuis la dernière fois »
+            eteindre()
+            debut = dernier_envoi = time.time()
+            saisie, depart = derniere_saisie(), souris()
+            while time.time() - debut < duree_max:
+                time.sleep(pas)
+                if _ECRANS.get("relancer"):
+                    _ECRANS["relancer"] = False
+                    touche_appuyee()
+                    saisie, depart = derniere_saisie(), souris()
+                    eteindre(); dernier_envoi = time.time()
+                    continue
+                x, y = souris()
+                if abs(x - depart[0]) + abs(y - depart[1]) > bouge_max or touche_appuyee():
+                    return   # tu es revenu : on laisse les écrans se rallumer
+                nouvelle = derniere_saisie()
+                if nouvelle != saisie or time.time() - dernier_envoi >= renvoi:
+                    saisie = nouvelle   # faux signal (ou simple rappel) : on éteint de nouveau
+                    eteindre(); dernier_envoi = time.time()
+        except Exception as e:
+            journal(f"Écrans en veille : {e}")
+        finally:
+            _ECRANS["en_cours"] = False
+    threading.Thread(target=surveiller, daemon=True, name="ecrans").start()
 
 
 def action_pc(action):
