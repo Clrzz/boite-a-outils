@@ -61,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.1.3"
+VERSION = "3.2.0"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -1931,6 +1931,11 @@ class Navigation:
 # =============================================================
 
 NOUVEAUTES = [
+    ("3.2.0", "La mini-fenêtre te suit en jeu", [
+        "Elle s'ouvre toute seule quand un jeu démarre et se range à la fin de la partie",
+        "Elle affiche aussi la charge et la VRAM de la carte graphique, et la durée de ta partie",
+        "Tu peux la couper dans Réglages > Jeux > « Ouvrir la mini-fenêtre pendant les parties »",
+    ]),
     ("3.1.0", "Plus léger, plus sûr", [
         "Retirés : le coffre-fort, l'alerte prix, le soundboard et la page Téléphone (tu ne t'en servais pas)",
         "Le petit serveur du Stream Deck n'écoute plus que ce PC : le téléphone et le Wi-Fi n'y ont plus accès",
