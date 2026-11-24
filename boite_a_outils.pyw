@@ -61,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.1.3"
+VERSION = "3.2.0"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -85,6 +85,7 @@ REGLAGES_DEFAUT = {
     "accent": "Cyan",            # couleur des boutons : Cyan, Rose, Violet ou Vert
     "mini_fenetre": False,       # petite fenêtre toujours visible avec les températures
     "mini_pos": None,
+    "mini_en_jeu": True,         # la mini-fenêtre s'ouvre toute seule pendant une partie
 }
 REGLAGES = dict(REGLAGES_DEFAUT)
 
@@ -1930,6 +1931,11 @@ class Navigation:
 # =============================================================
 
 NOUVEAUTES = [
+    ("3.2.0", "La mini-fenêtre te suit en jeu", [
+        "Elle s'ouvre toute seule quand un jeu démarre et se range à la fin de la partie",
+        "Elle affiche aussi la charge et la VRAM de la carte graphique, et la durée de ta partie",
+        "Tu peux la couper dans Réglages > Jeux > « Ouvrir la mini-fenêtre pendant les parties »",
+    ]),
     ("3.1.0", "Plus léger, plus sûr", [
         "Retirés : le coffre-fort, l'alerte prix, le soundboard et la page Téléphone (tu ne t'en servais pas)",
         "Le petit serveur du Stream Deck n'écoute plus que ce PC : le téléphone et le Wi-Fi n'y ont plus accès",
@@ -1974,6 +1980,7 @@ class BoiteAOutils:
         self.flottants = []               # panneaux posés par-dessus la page (recherche, notifications)
         self.sous_pages = {}              # nom de page -> ses onglets
         self.mini = None
+        self.mini_auto = False   # True quand la mini-fenêtre a été ouverte toute seule pour une partie
         self.maj_dispo = None
         racine.title("Boîte à outils de Crz")
         if (DOSSIER_APPLI / "icone.ico").exists():   # logo de l'appli (fenêtre + barre des tâches)
@@ -2357,7 +2364,8 @@ class BoiteAOutils:
         else:
             self.ouvrir_mini()
 
-    def ouvrir_mini(self):
+    def ouvrir_mini(self, retenir=True):
+        """retenir=False : ouverture automatique en jeu, sans changer le choix enregistré."""
         if self.mini:
             return
         f = self.mini = tk.Toplevel(self.racine)
@@ -2371,11 +2379,14 @@ class BoiteAOutils:
         dedans = tk.Frame(f, bg=FOND, padx=12, pady=7)
         dedans.pack(padx=1, pady=1)
         self.mini_valeurs = {}
-        for cle, nom, couleur in (("cpu", "CPU", CYAN), ("gpu", "GPU", ROSE), ("ram", "RAM", VIOLET)):
-            bloc = tk.Frame(dedans, bg=FOND)
+        self.mini_blocs = {}
+        for cle, nom, couleur in (("cpu", "CPU", CYAN), ("gpu", "GPU", ROSE), ("charge", "CHARGE", ROSE),
+                                  ("vram", "VRAM", ROSE), ("ram", "RAM", VIOLET), ("partie", "PARTIE", VERT)):
+            bloc = self.mini_blocs[cle] = tk.Frame(dedans, bg=FOND)
             bloc.pack(side="left", padx=7)
             tk.Label(bloc, text=nom, bg=FOND, fg=GRIS, font=police(7, True)).pack()
-            self.mini_valeurs[cle] = tk.Label(bloc, text="--", bg=FOND, fg=couleur, font=police(14, True), width=4)
+            self.mini_valeurs[cle] = tk.Label(bloc, text="--", bg=FOND, fg=couleur, font=police(14, True),
+                                              width=5 if cle in ("vram", "partie") else 4)
             self.mini_valeurs[cle].pack()
         position = REGLAGES.get("mini_pos")
         f.update_idletasks()
@@ -2402,7 +2413,7 @@ class BoiteAOutils:
             m.add_command(label="Ouvrir la boîte à outils", command=self.montrer)
             m.add_command(label="Couper / réactiver le micro", command=self.basculer_micro)
             m.add_separator()
-            m.add_command(label="Fermer la mini-fenêtre", command=self.fermer_mini)
+            m.add_command(label="Fermer la mini-fenêtre", command=lambda: self.fermer_mini(retenir=not self.mini_auto))
             m.tk_popup(evt.x_root, evt.y_root)
         for w in [f, dedans] + [e for b in dedans.winfo_children() for e in [b] + b.winfo_children()]:
             w.bind("<Button-1>", attraper)
@@ -2410,17 +2421,19 @@ class BoiteAOutils:
             w.bind("<ButtonRelease-1>", lacher)
             w.bind("<Double-Button-1>", lambda e: self.montrer())
             w.bind("<Button-3>", menu)
-        if not REGLAGES.get("mini_fenetre"):
+        if retenir and not REGLAGES.get("mini_fenetre"):
             REGLAGES["mini_fenetre"] = True
             enregistrer_reglages()
+        self.mini_auto = not retenir
         self.maj_mini()
         self.maj_actions_rapides()
 
-    def fermer_mini(self):
+    def fermer_mini(self, retenir=True):
         if self.mini:
             self.mini.destroy()
             self.mini = None
-        if REGLAGES.get("mini_fenetre"):
+        self.mini_auto = False
+        if retenir and REGLAGES.get("mini_fenetre"):
             REGLAGES["mini_fenetre"] = False
             enregistrer_reglages()
         self.maj_actions_rapides()
@@ -2435,6 +2448,17 @@ class BoiteAOutils:
         self.mini_valeurs["gpu"].config(text=f"{gpu[0]:.0f}°" if gpu else "--",
                                         fg=ROUGE if gpu and gpu[0] >= ALERTE_GPU else ROSE)
         self.mini_valeurs["ram"].config(text=f"{ram[0] / ram[1] * 100:.0f}%" if ram else "--")
+        self.mini_valeurs["charge"].config(text=f"{gpu[1]:.0f}%" if gpu else "--")
+        self.mini_valeurs["vram"].config(text=f"{gpu[2] / 1024:.1f}G".replace(".", ",") if gpu and gpu[2] else "--")
+        partie = getattr(self, "partie", None)
+        bloc = self.mini_blocs["partie"]
+        if partie:
+            minutes = int(time.time() - partie["debut"]) // 60
+            self.mini_valeurs["partie"].config(text=f"{minutes // 60}h{minutes % 60:02d}")
+            if not bloc.winfo_ismapped():
+                bloc.pack(side="left", padx=7)
+        elif bloc.winfo_ismapped():
+            bloc.pack_forget()
 
     # ---------- icône près de l'horloge ----------
 
@@ -4158,6 +4182,8 @@ def suivre_jeu(self):
 @methode
 def debut_partie(self, jeu):
     self.partie = {"jeu": jeu, "debut": time.time(), "cpu_max": 0, "gpu_max": 0}
+    if REGLAGES.get("mini_en_jeu", True) and not self.mini:
+        self.ouvrir_mini(retenir=False)   # s'ouvre pour la partie, se range à la fin
     profil = REGLAGES.get("profil_en_jeu", "Jeu")
     if REGLAGES.get("auto_profil") and profil in REGLAGES.get("profils", {}) and REGLAGES.get("profil_actif") != profil:
         self.profil_avant_jeu = REGLAGES.get("profil_actif")
@@ -4178,6 +4204,10 @@ def noter_partie(self, cpu, gpu):
 @methode
 def fin_partie(self):
     partie, self.partie = self.partie, None
+    if self.mini and getattr(self, "mini_auto", False):
+        self.fermer_mini(retenir=False)
+    elif self.mini:
+        self.maj_mini()   # cache le compteur de partie
     avant = getattr(self, "profil_avant_jeu", None)
     if REGLAGES.get("auto_profil") and avant and avant in REGLAGES.get("profils", {}):
         self.activer_profil(avant, ouvrir=False)
@@ -4923,6 +4953,9 @@ def page_reglages(self, cadre):
     ligne(jeux, "auto_profil", "oui_non", "Changer de profil tout seul quand un jeu démarre",
           "Le profil choisi s'active (sans ouvrir d'appli), et le profil d'avant revient quand tu quittes le jeu.")
     ligne(jeux, "profil_en_jeu", "choix", "Profil à activer en jeu", "", list(REGLAGES.get("profils", {})) or ["Jeu"])
+    petit_titre(jeux, "Mini-fenêtre").pack(fill="x", pady=(14, 2))
+    ligne(jeux, "mini_en_jeu", "oui_non", "Ouvrir la mini-fenêtre pendant les parties",
+          "Températures, charge et VRAM de la carte graphique, durée de la partie. Elle se range toute seule à la fin.")
 
     micro_ = onglets.ajouter("Micro")
     barre_enregistrer(micro_)

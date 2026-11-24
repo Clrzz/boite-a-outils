@@ -1,6 +1,6 @@
 {
-  "version": "3.1.3",
+  "version": "3.2.0",
   "plugin": "1.4.7",
-  "notes": "Écrans en veille : ils restent éteints même si un périphérique envoie un faux signal, jusqu'à ce que tu touches la souris ou le clavier.",
-  "sha256": "1bbd681248de32c7c709f20c9c30a02d6688692c4560b2bad33e3b047b3f4c01"
+  "notes": "La mini-fenêtre s'ouvre toute seule en jeu et se range à la fin. Elle affiche aussi la charge et la VRAM de la carte graphique, et la durée de la partie.",
+  "sha256": "128c4487f64f22f3109ccaea27daee2206919e3edb7873f616f8407dd5f58e3d"
 }
