@@ -61,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.2.1"
+VERSION = "3.2.2"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -1816,6 +1816,8 @@ class Bulle:
         try:
             x, y = self.widget.winfo_pointerxy()
             gx, gy = self.widget.winfo_rootx(), self.widget.winfo_rooty()
+            if self.widget.focus_displayof() is None:   # la boîte à outils n'est pas au premier plan (jeu, autre appli)
+                return False
             return (self.widget.winfo_viewable() and gx <= x < gx + self.widget.winfo_width()
                     and gy <= y < gy + self.widget.winfo_height())
         except tk.TclError:
@@ -2805,11 +2807,11 @@ def page_accueil(self, cadre):
             ("micro", "🎙", "Micro", ROSE, self.basculer_micro, "Coupe ou réactive ton micro (celui choisi dans les Réglages)."),
             ("profil", "🎛", "Profil", VIOLET, self.menu_profils, "Change de profil en un clic."),
             ("mini", "▣", "Mini-fenêtre", VERT, self.basculer_mini, "Une petite fenêtre toujours visible avec les températures."),
-            ("ecrans", "🌙", "Écrans en veille", ORANGE, eteindre_ecrans,
-             "Éteint tes écrans, le PC continue de tourner (téléchargements, musique…). Bouge la souris pour les rallumer."))):
+            ("ecrans", "🌙", "Écrans en veille", ORANGE, eteindre_ecrans, ""))):   # pas de bulle : le bouton dit déjà tout
         grille.columnconfigure(i % 2, weight=1, uniform="a")
         self.infos_actions[cle] = self.action_rapide(grille, icone, titre, couleur, commande, i // 2, i % 2)
-        Bulle(self.infos_actions[cle].master, aide)
+        if aide:
+            Bulle(self.infos_actions[cle].master, aide)
     self.infos_actions["ecrans"].master.grid(columnspan=2)   # le 5e bouton prend toute la largeur
     self.infos_actions["ecrans"].config(text="bouge la souris pour rallumer")
 
