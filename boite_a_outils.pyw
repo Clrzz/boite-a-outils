@@ -61,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.2.0"
+VERSION = "3.2.1"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -1801,7 +1801,8 @@ class Bulle:
         self.attente = self.widget.after(500, self.montrer)
 
     def montrer(self):
-        if self.fenetre or not self.texte:
+        self.attente = None
+        if self.fenetre or not self.texte or not self.souris_dessus():
             return
         self.fenetre = f = tk.Toplevel(self.widget)
         f.overrideredirect(True)
@@ -1809,6 +1810,26 @@ class Bulle:
         tk.Label(f, text=self.texte, bg="#1a1a2e", fg=TEXTE, font=police(9), padx=8, pady=4, justify="left",
                  wraplength=320, highlightthickness=1, highlightbackground=BORD).pack()
         f.geometry(f"+{self.widget.winfo_rootx()}+{self.widget.winfo_rooty() + self.widget.winfo_height() + 6}")
+        self.surveiller()
+
+    def souris_dessus(self):
+        try:
+            x, y = self.widget.winfo_pointerxy()
+            gx, gy = self.widget.winfo_rootx(), self.widget.winfo_rooty()
+            return (self.widget.winfo_viewable() and gx <= x < gx + self.widget.winfo_width()
+                    and gy <= y < gy + self.widget.winfo_height())
+        except tk.TclError:
+            return False
+
+    def surveiller(self):
+        """Windows n'envoie pas toujours <Leave> (jeu lancé, écrans éteints, Alt+Tab) :
+        on vérifie nous-mêmes que la souris est encore sur l'élément, sinon la bulle resterait par-dessus le jeu."""
+        if not self.fenetre:
+            return
+        if self.souris_dessus():
+            self.widget.after(300, self.surveiller)
+        else:
+            self.cacher()
 
     def cacher(self, _evt=None):
         if self.attente:
@@ -3000,108 +3021,110 @@ BoiteAOutils.etat_temperature = _etat_temperature
 @methode
 def maj_mesures(self):
     def ensuite(m):
-        if isinstance(m, Exception) or not m:
-            m = {"gpu": None, "ram": None, "cpu_temp": None, "cpu_usage": None, "disques": [], "capteurs_ok": False,
-                 "reseau": None, "ventilos": [], "temps": [], "watts": {}}
-        t = self.tuiles
-        refroidir = lambda: self.aller_a("Santé du PC", "Refroidissement")
-        # --- Processeur ---
-        if m["cpu_temp"] is not None:
-            temp = m["cpu_temp"]
-            self.max["cpu"] = max(self.max["cpu"], temp)
-            etat, couleur = self.etat_temperature(temp, ALERTE_CPU)
-            charge = f"Charge {m['cpu_usage']:.0f} % · " if m["cpu_usage"] is not None else ""
-            self.remplir_tuile(t["cpu"], f"{temp:.0f}", "°C", f"{charge}max {self.max['cpu']:.0f} °C",
-                               temp / 100, etat, couleur, ROUGE if couleur == ROUGE else None)
-            if self.dure("cpu_chaud", temp >= ALERTE_CPU, 5):
-                if self.tache("cpu_chaud", "alerte", f"Processeur brûlant ({temp:.0f} °C)",
-                              f"Il dépasse ton alerte de {ALERTE_CPU} °C. Vérifie le ventilateur et la pompe.", "Voir", refroidir):
-                    self.racine.bell()
-            elif self.dure("cpu_frais", temp < ALERTE_CPU - 3, 5):
-                self.tache_finie("cpu_chaud")
-        else:
-            charge = f"Charge {m['cpu_usage']:.0f} % · " if m.get("cpu_usage") is not None else ""
-            self.remplir_tuile(t["cpu"], "--", "°C", charge + "capteur absent", 0, "?", GRIS, GRIS)
-        # --- Carte graphique ---
-        if m["gpu"]:
-            temp, util, vram, watts = m["gpu"]
-            self.max["gpu"] = max(self.max["gpu"], temp)
-            etat, couleur = self.etat_temperature(temp, ALERTE_GPU)
-            self.remplir_tuile(t["gpu"], f"{temp:.0f}", "°C", f"Charge {util} % · {watts:.0f} W",
-                               temp / 100, etat, couleur, ROUGE if couleur == ROUGE else None)
-            self.vram = vram
-            if self.dure("gpu_chaud", temp >= ALERTE_GPU, 5):
-                if self.tache("gpu_chaud", "alerte", f"Carte graphique brûlante ({temp:.0f} °C)",
-                              f"Elle dépasse ton alerte de {ALERTE_GPU} °C.", "Voir", refroidir):
-                    self.racine.bell()
-            elif self.dure("gpu_frais", temp < ALERTE_GPU - 3, 5):
-                self.tache_finie("gpu_chaud")
-        else:
-            self.remplir_tuile(t["gpu"], "--", "°C", "carte NVIDIA introuvable", 0, "?", GRIS, GRIS)
-        # --- Mémoire ---
-        if m["ram"]:
-            utilise, total = m["ram"]
-            pct = utilise / total * 100
-            couleur = ROUGE if pct >= 90 else (ORANGE if pct >= 80 else VERT)
-            vram = getattr(self, "vram", None)
-            self.remplir_tuile(t["ram"], f"{utilise:.1f}".replace(".", ","), f"/ {total:.0f} Go",
-                               f"VRAM {vram / 1024:.1f} Go utilisés".replace(".", ",") if vram else "",
-                               pct / 100, f"{pct:.0f} %", couleur, couleur_jauge=VIOLET)
-            if self.dure("ram_pleine", pct >= 92, 15):
-                self.tache("ram", "attention", f"Mémoire presque pleine ({pct:.0f} %)",
-                           "Ferme des applis ou des onglets du navigateur pour éviter les ralentissements.", "", None)
-            elif pct < 85:
-                self.tache_finie("ram")
-        # --- Connexion : on compare avec le relevé d'il y a 2 s ---
-        vitesse = debit(self.dernier_reseau, m.get("reseau"))
-        self.dernier_reseau = m.get("reseau") or self.dernier_reseau
-        if vitesse:
-            down, up = vitesse
-            self.max_down = max(self.max_down, down)
-            self.remplir_tuile(t["net"], f"{down:.1f}".replace(".", ",") if down < 10 else f"{down:.0f}",
-                               "Mbit/s ↓", f"↑ {up:.1f} Mbit/s envoi".replace(".", ","),
-                               down / max(self.max_down, 50), "Active" if down + up > 0.2 else "Calme", VERT, couleur_jauge=VERT)
-        elif m.get("reseau") is None:
-            self.remplir_tuile(t["net"], "--", "Mbit/s", "mesure impossible", 0, "?", GRIS, GRIS)
-        # --- Disques (températures) ---
-        if m["disques"]:
-            self.temps_disques = m["disques"]
-        # --- Capteurs absents ? (on laisse 20 s au démarrage) ---
-        if not m["capteurs_ok"] and time.time() - self.depart > 20:
-            self.tache("capteurs", "info", "Température du processeur indisponible",
-                       "Lance LibreHardwareMonitor (avec son serveur web) pour l'avoir.", "Diagnostic",
-                       lambda: self.aller_a("Santé du PC", "Diagnostic"))
-        elif m["capteurs_ok"]:
-            self.tache_finie("capteurs")
-        # --- Ventilateurs : l'un d'eux s'est-il arrêté ? ---
-        for v in m.get("ventilos", []):
-            cle = f"{v['ou']} / {v['nom']}"
-            self.ventilos_vus[cle] = max(self.ventilos_vus.get(cle, 0), v["rpm"])
-            demande = v.get("pct")
-            arrete = (v["ou"] == "Carte mère" and self.ventilos_vus[cle] > 300 and v["rpm"] < 50
-                      and (demande is None or demande > 20))
-            if self.dure("ventilo " + cle, arrete, 5):
-                if self.tache("ventilo " + cle, "alerte", f"{nom_ventilo(v['nom'])} à l'arrêt",
-                              "Il tournait tout à l'heure et ne tourne plus. Regarde-le vite : sans lui, ça chauffe.",
-                              "Voir", refroidir):
-                    self.racine.bell()
-            elif not arrete:
-                self.tache_finie("ventilo " + cle)
-        self.verifier_ventilo_lent(m)
-        # --- Le reste de l'appli se sert de ces mesures ---
-        self.dernieres_mesures = m
-        self.derniere_vitesse = vitesse or getattr(self, "derniere_vitesse", None)
-        cpu, gpu = m["cpu_temp"], (m["gpu"][0] if m["gpu"] else None)
-        self.noter("cpu_max", cpu)
-        self.noter("gpu_max", gpu)
-        self.noter_partie(cpu, gpu)
-        self.ajouter_historique(cpu, gpu)
-        self.dessiner_graphique()
-        self.maj_actions_rapides()
-        self.maj_mini()
-        if self.navigation.actuelle == "Santé du PC":
-            self.dessiner_refroidissement()
-        self.racine.after(2000, self.maj_mesures)   # et on recommence dans 2 s
+        try:
+            if isinstance(m, Exception) or not m:
+                m = {"gpu": None, "ram": None, "cpu_temp": None, "cpu_usage": None, "disques": [], "capteurs_ok": False,
+                     "reseau": None, "ventilos": [], "temps": [], "watts": {}}
+            t = self.tuiles
+            refroidir = lambda: self.aller_a("Santé du PC", "Refroidissement")
+            # --- Processeur ---
+            if m["cpu_temp"] is not None:
+                temp = m["cpu_temp"]
+                self.max["cpu"] = max(self.max["cpu"], temp)
+                etat, couleur = self.etat_temperature(temp, ALERTE_CPU)
+                charge = f"Charge {m['cpu_usage']:.0f} % · " if m["cpu_usage"] is not None else ""
+                self.remplir_tuile(t["cpu"], f"{temp:.0f}", "°C", f"{charge}max {self.max['cpu']:.0f} °C",
+                                   temp / 100, etat, couleur, ROUGE if couleur == ROUGE else None)
+                if self.dure("cpu_chaud", temp >= ALERTE_CPU, 5):
+                    if self.tache("cpu_chaud", "alerte", f"Processeur brûlant ({temp:.0f} °C)",
+                                  f"Il dépasse ton alerte de {ALERTE_CPU} °C. Vérifie le ventilateur et la pompe.", "Voir", refroidir):
+                        self.racine.bell()
+                elif self.dure("cpu_frais", temp < ALERTE_CPU - 3, 5):
+                    self.tache_finie("cpu_chaud")
+            else:
+                charge = f"Charge {m['cpu_usage']:.0f} % · " if m.get("cpu_usage") is not None else ""
+                self.remplir_tuile(t["cpu"], "--", "°C", charge + "capteur absent", 0, "?", GRIS, GRIS)
+            # --- Carte graphique ---
+            if m["gpu"]:
+                temp, util, vram, watts = m["gpu"]
+                self.max["gpu"] = max(self.max["gpu"], temp)
+                etat, couleur = self.etat_temperature(temp, ALERTE_GPU)
+                self.remplir_tuile(t["gpu"], f"{temp:.0f}", "°C", f"Charge {util} % · {watts:.0f} W",
+                                   temp / 100, etat, couleur, ROUGE if couleur == ROUGE else None)
+                self.vram = vram
+                if self.dure("gpu_chaud", temp >= ALERTE_GPU, 5):
+                    if self.tache("gpu_chaud", "alerte", f"Carte graphique brûlante ({temp:.0f} °C)",
+                                  f"Elle dépasse ton alerte de {ALERTE_GPU} °C.", "Voir", refroidir):
+                        self.racine.bell()
+                elif self.dure("gpu_frais", temp < ALERTE_GPU - 3, 5):
+                    self.tache_finie("gpu_chaud")
+            else:
+                self.remplir_tuile(t["gpu"], "--", "°C", "carte NVIDIA introuvable", 0, "?", GRIS, GRIS)
+            # --- Mémoire ---
+            if m["ram"]:
+                utilise, total = m["ram"]
+                pct = utilise / total * 100
+                couleur = ROUGE if pct >= 90 else (ORANGE if pct >= 80 else VERT)
+                vram = getattr(self, "vram", None)
+                self.remplir_tuile(t["ram"], f"{utilise:.1f}".replace(".", ","), f"/ {total:.0f} Go",
+                                   f"VRAM {vram / 1024:.1f} Go utilisés".replace(".", ",") if vram else "",
+                                   pct / 100, f"{pct:.0f} %", couleur, couleur_jauge=VIOLET)
+                if self.dure("ram_pleine", pct >= 92, 15):
+                    self.tache("ram", "attention", f"Mémoire presque pleine ({pct:.0f} %)",
+                               "Ferme des applis ou des onglets du navigateur pour éviter les ralentissements.", "", None)
+                elif pct < 85:
+                    self.tache_finie("ram")
+            # --- Connexion : on compare avec le relevé d'il y a 2 s ---
+            vitesse = debit(self.dernier_reseau, m.get("reseau"))
+            self.dernier_reseau = m.get("reseau") or self.dernier_reseau
+            if vitesse:
+                down, up = vitesse
+                self.max_down = max(self.max_down, down)
+                self.remplir_tuile(t["net"], f"{down:.1f}".replace(".", ",") if down < 10 else f"{down:.0f}",
+                                   "Mbit/s ↓", f"↑ {up:.1f} Mbit/s envoi".replace(".", ","),
+                                   down / max(self.max_down, 50), "Active" if down + up > 0.2 else "Calme", VERT, couleur_jauge=VERT)
+            elif m.get("reseau") is None:
+                self.remplir_tuile(t["net"], "--", "Mbit/s", "mesure impossible", 0, "?", GRIS, GRIS)
+            # --- Disques (températures) ---
+            if m["disques"]:
+                self.temps_disques = m["disques"]
+            # --- Capteurs absents ? (on laisse 20 s au démarrage) ---
+            if not m["capteurs_ok"] and time.time() - self.depart > 20:
+                self.tache("capteurs", "info", "Température du processeur indisponible",
+                           "Lance LibreHardwareMonitor (avec son serveur web) pour l'avoir.", "Diagnostic",
+                           lambda: self.aller_a("Santé du PC", "Diagnostic"))
+            elif m["capteurs_ok"]:
+                self.tache_finie("capteurs")
+            # --- Ventilateurs : l'un d'eux s'est-il arrêté ? ---
+            for v in m.get("ventilos", []):
+                cle = f"{v['ou']} / {v['nom']}"
+                self.ventilos_vus[cle] = max(self.ventilos_vus.get(cle, 0), v["rpm"])
+                demande = v.get("pct")
+                arrete = (v["ou"] == "Carte mère" and self.ventilos_vus[cle] > 300 and v["rpm"] < 50
+                          and (demande is None or demande > 20))
+                if self.dure("ventilo " + cle, arrete, 5):
+                    if self.tache("ventilo " + cle, "alerte", f"{nom_ventilo(v['nom'])} à l'arrêt",
+                                  "Il tournait tout à l'heure et ne tourne plus. Regarde-le vite : sans lui, ça chauffe.",
+                                  "Voir", refroidir):
+                        self.racine.bell()
+                elif not arrete:
+                    self.tache_finie("ventilo " + cle)
+            self.verifier_ventilo_lent(m)
+            # --- Le reste de l'appli se sert de ces mesures ---
+            self.dernieres_mesures = m
+            self.derniere_vitesse = vitesse or getattr(self, "derniere_vitesse", None)
+            cpu, gpu = m["cpu_temp"], (m["gpu"][0] if m["gpu"] else None)
+            self.noter("cpu_max", cpu)
+            self.noter("gpu_max", gpu)
+            self.noter_partie(cpu, gpu)
+            self.ajouter_historique(cpu, gpu)
+            self.dessiner_graphique()
+            self.maj_actions_rapides()
+            self.maj_mini()
+            if self.navigation.actuelle == "Santé du PC":
+                self.dessiner_refroidissement()
+        finally:   # même si une mesure plante, la boucle continue (l'erreur part dans le journal)
+            self.racine.after(2000, self.maj_mesures)
     self.en_fond(lire_tout, ensuite)
 
 
@@ -3124,49 +3147,51 @@ def verifier_ventilo_lent(self, m):
 def maj_disques_dash(self):
     """Place libre + température de chaque disque (toutes les 30 s)."""
     def ensuite(lecteurs):
-        if isinstance(lecteurs, Exception):
-            lecteurs = []
-        temps = {}
-        for modele, t, lettre in self.temps_disques:
-            lettre = lettre or lettre_du_disque(modele)
-            if lettre:
-                temps.setdefault(lettre, t)
-        a_surveiller = 0
-        seuil = int(REGLAGES.get("alerte_disque", 90)) / 100
-        for lettre, total, libre in lecteurs:
-            if lettre not in self.lignes_disques:
-                l = tk.Frame(self.cadre_dash_disques, bg=CARTE)
-                l.pack(fill="x", pady=2)
-                tk.Label(l, text=f"{lettre}:", bg=CARTE, fg=TEXTE, font=police(9, True), width=3, anchor="w").pack(side="left")
-                texte = tk.Label(l, text="", bg=CARTE, fg=GRIS, font=police(9), width=17, anchor="e")
-                texte.pack(side="right")
-                barre = Jauge(l, CYAN, epaisseur=5)
-                barre.pack(side="left", fill="x", expand=True, padx=(2, 8))
-                self.lignes_disques[lettre] = (barre, texte)
-            barre, texte = self.lignes_disques[lettre]
-            rempli = 1 - libre / total if total else 0
-            temp = temps.get(lettre)
-            couleur = ROUGE if rempli > 0.97 or (temp or 0) >= 70 else (ORANGE if rempli >= seuil or (temp or 0) >= 60 else CYAN)
-            a_surveiller += couleur != CYAN
-            texte.config(text=f"{libre / 1e9:,.0f} Go libres".replace(",", " ") + (f" · {temp:.0f}°" if temp else ""))
-            barre.regler(rempli, couleur)
-            if rempli >= seuil:
-                self.tache(f"disque {lettre}", "attention", f"Disque {lettre}: presque plein",
-                           f"Il reste {libre / 1e9:.0f} Go sur {total / 1e9:.0f}. Un peu de ménage ?", "Nettoyer",
-                           lambda: self.aller_a("Entretien", "Nettoyer"))
-            else:
-                self.tache_finie(f"disque {lettre}")
-            if (temp or 0) >= 70:
-                self.tache(f"disque chaud {lettre}", "attention", f"Disque {lettre}: très chaud ({temp:.0f} °C)",
-                           "Un SSD qui reste au-dessus de 70 °C s'use plus vite.", "Voir",
-                           lambda: self.aller_a("Santé du PC", "Disques"))
-            else:
-                self.tache_finie(f"disque chaud {lettre}")
-        self.lecteurs = lecteurs
-        if lecteurs and not getattr(self, "sante_disques_connue", False):
-            ok = len(lecteurs) - a_surveiller
-            self.dash_disques.config(text=espacer(f"{ok} / {len(lecteurs)} OK"), fg=VERT if not a_surveiller else ORANGE)
-        self.racine.after(30000, self.maj_disques_dash)
+        try:
+            if isinstance(lecteurs, Exception):
+                lecteurs = []
+            temps = {}
+            for modele, t, lettre in self.temps_disques:
+                lettre = lettre or lettre_du_disque(modele)
+                if lettre:
+                    temps.setdefault(lettre, t)
+            a_surveiller = 0
+            seuil = int(REGLAGES.get("alerte_disque", 90)) / 100
+            for lettre, total, libre in lecteurs:
+                if lettre not in self.lignes_disques:
+                    l = tk.Frame(self.cadre_dash_disques, bg=CARTE)
+                    l.pack(fill="x", pady=2)
+                    tk.Label(l, text=f"{lettre}:", bg=CARTE, fg=TEXTE, font=police(9, True), width=3, anchor="w").pack(side="left")
+                    texte = tk.Label(l, text="", bg=CARTE, fg=GRIS, font=police(9), width=17, anchor="e")
+                    texte.pack(side="right")
+                    barre = Jauge(l, CYAN, epaisseur=5)
+                    barre.pack(side="left", fill="x", expand=True, padx=(2, 8))
+                    self.lignes_disques[lettre] = (barre, texte)
+                barre, texte = self.lignes_disques[lettre]
+                rempli = 1 - libre / total if total else 0
+                temp = temps.get(lettre)
+                couleur = ROUGE if rempli > 0.97 or (temp or 0) >= 70 else (ORANGE if rempli >= seuil or (temp or 0) >= 60 else CYAN)
+                a_surveiller += couleur != CYAN
+                texte.config(text=f"{libre / 1e9:,.0f} Go libres".replace(",", " ") + (f" · {temp:.0f}°" if temp else ""))
+                barre.regler(rempli, couleur)
+                if rempli >= seuil:
+                    self.tache(f"disque {lettre}", "attention", f"Disque {lettre}: presque plein",
+                               f"Il reste {libre / 1e9:.0f} Go sur {total / 1e9:.0f}. Un peu de ménage ?", "Nettoyer",
+                               lambda: self.aller_a("Entretien", "Nettoyer"))
+                else:
+                    self.tache_finie(f"disque {lettre}")
+                if (temp or 0) >= 70:
+                    self.tache(f"disque chaud {lettre}", "attention", f"Disque {lettre}: très chaud ({temp:.0f} °C)",
+                               "Un SSD qui reste au-dessus de 70 °C s'use plus vite.", "Voir",
+                               lambda: self.aller_a("Santé du PC", "Disques"))
+                else:
+                    self.tache_finie(f"disque chaud {lettre}")
+            self.lecteurs = lecteurs
+            if lecteurs and not getattr(self, "sante_disques_connue", False):
+                ok = len(lecteurs) - a_surveiller
+                self.dash_disques.config(text=espacer(f"{ok} / {len(lecteurs)} OK"), fg=VERT if not a_surveiller else ORANGE)
+        finally:   # même si une mesure plante, la boucle continue (l'erreur part dans le journal)
+            self.racine.after(30000, self.maj_disques_dash)
     self.en_fond(lecteurs_fixes, ensuite)
 
 
@@ -3276,14 +3301,16 @@ def dessiner_graphique(self):
 @methode
 def suivre_musique(self):
     def ensuite(res):
-        if not isinstance(res, Exception):
-            self.titre_musique, self.micro_coupe = res
-            artiste, _, morceau = (self.titre_musique or "").partition(" - ")
-            self.dash_musique.config(text=(morceau or artiste or "Rien en lecture")[:34],
-                                     fg=TEXTE if self.titre_musique else GRIS)
-            self.dash_artiste.config(text=artiste if morceau else "")
-            self.afficher_micro()
-        self.racine.after(3000, self.suivre_musique)
+        try:
+            if not isinstance(res, Exception):
+                self.titre_musique, self.micro_coupe = res
+                artiste, _, morceau = (self.titre_musique or "").partition(" - ")
+                self.dash_musique.config(text=(morceau or artiste or "Rien en lecture")[:34],
+                                         fg=TEXTE if self.titre_musique else GRIS)
+                self.dash_artiste.config(text=artiste if morceau else "")
+                self.afficher_micro()
+        finally:   # même si une mesure plante, la boucle continue (l'erreur part dans le journal)
+            self.racine.after(3000, self.suivre_musique)
     self.en_fond(lambda: (musique_en_cours(), micro("etat")), ensuite)
 
 
@@ -4158,24 +4185,26 @@ def fin_session(self):
 def suivre_jeu(self):
     """Toutes les 20 s : quel jeu tourne ? On ajoute le temps écoulé à ce jeu, et on repère le début et la fin des parties."""
     def ensuite(jeu):
-        maintenant = time.time()
-        ecoule = min(maintenant - self.dernier_releve, 60)   # max 60 s (si le PC était en veille)
-        self.dernier_releve = maintenant
-        if isinstance(jeu, Exception):
-            jeu = None
-        if jeu and jeu == self.jeu_actuel:
-            jour = time.strftime("%Y-%m-%d")
-            self.temps.setdefault(jour, {})
-            self.temps[jour][jeu] = self.temps[jour].get(jeu, 0) + ecoule
-            ecrire_json(FICHIER_TEMPS, self.temps)
-        if jeu != self.jeu_actuel:
-            if self.jeu_actuel:
-                self.fin_partie()
-            self.jeu_actuel, self.debut_jeu = jeu, maintenant
-            if jeu:
-                self.debut_partie(jeu)
-        self.afficher_temps()
-        self.racine.after(20 * 1000, self.suivre_jeu)
+        try:
+            maintenant = time.time()
+            ecoule = min(maintenant - self.dernier_releve, 60)   # max 60 s (si le PC était en veille)
+            self.dernier_releve = maintenant
+            if isinstance(jeu, Exception):
+                jeu = None
+            if jeu and jeu == self.jeu_actuel:
+                jour = time.strftime("%Y-%m-%d")
+                self.temps.setdefault(jour, {})
+                self.temps[jour][jeu] = self.temps[jour].get(jeu, 0) + ecoule
+                ecrire_json(FICHIER_TEMPS, self.temps)
+            if jeu != self.jeu_actuel:
+                if self.jeu_actuel:
+                    self.fin_partie()
+                self.jeu_actuel, self.debut_jeu = jeu, maintenant
+                if jeu:
+                    self.debut_partie(jeu)
+            self.afficher_temps()
+        finally:   # même si une mesure plante, la boucle continue (l'erreur part dans le journal)
+            self.racine.after(20 * 1000, self.suivre_jeu)
     self.en_fond(lambda: jeu_en_cours(getattr(self, "jeux", {})), ensuite)
 
 

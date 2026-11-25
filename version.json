@@ -1,6 +1,6 @@
 {
-  "version": "3.2.0",
+  "version": "3.2.1",
   "plugin": "1.4.7",
-  "notes": "La mini-fenêtre s'ouvre toute seule en jeu et se range à la fin. Elle affiche aussi la charge et la VRAM de la carte graphique, et la durée de la partie.",
-  "sha256": "128c4487f64f22f3109ccaea27daee2206919e3edb7873f616f8407dd5f58e3d"
+  "notes": "Plus fiable : les températures et le temps de jeu ne se figent plus après une erreur, et les bulles d'aide ne restent plus affichées par-dessus les jeux.",
+  "sha256": "a2f451fab8270f99b2ae37fe3ef6a99eda60b9a3737f075bf4a9c2c2e806d3c1"
 }
