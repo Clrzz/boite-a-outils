@@ -1801,7 +1801,8 @@ class Bulle:
         self.attente = self.widget.after(500, self.montrer)
 
     def montrer(self):
-        if self.fenetre or not self.texte:
+        self.attente = None
+        if self.fenetre or not self.texte or not self.souris_dessus():
             return
         self.fenetre = f = tk.Toplevel(self.widget)
         f.overrideredirect(True)
@@ -1809,6 +1810,26 @@ class Bulle:
         tk.Label(f, text=self.texte, bg="#1a1a2e", fg=TEXTE, font=police(9), padx=8, pady=4, justify="left",
                  wraplength=320, highlightthickness=1, highlightbackground=BORD).pack()
         f.geometry(f"+{self.widget.winfo_rootx()}+{self.widget.winfo_rooty() + self.widget.winfo_height() + 6}")
+        self.surveiller()
+
+    def souris_dessus(self):
+        try:
+            x, y = self.widget.winfo_pointerxy()
+            gx, gy = self.widget.winfo_rootx(), self.widget.winfo_rooty()
+            return (self.widget.winfo_viewable() and gx <= x < gx + self.widget.winfo_width()
+                    and gy <= y < gy + self.widget.winfo_height())
+        except tk.TclError:
+            return False
+
+    def surveiller(self):
+        """Windows n'envoie pas toujours <Leave> (jeu lancé, écrans éteints, Alt+Tab) :
+        on vérifie nous-mêmes que la souris est encore sur l'élément, sinon la bulle resterait par-dessus le jeu."""
+        if not self.fenetre:
+            return
+        if self.souris_dessus():
+            self.widget.after(300, self.surveiller)
+        else:
+            self.cacher()
 
     def cacher(self, _evt=None):
         if self.attente:
