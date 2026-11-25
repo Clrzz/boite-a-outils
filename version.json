@@ -1,6 +1,6 @@
 {
-  "version": "3.2.1",
+  "version": "3.2.2",
   "plugin": "1.4.7",
-  "notes": "Plus fiable : les températures et le temps de jeu ne se figent plus après une erreur, et les bulles d'aide ne restent plus affichées par-dessus les jeux.",
-  "sha256": "a2f451fab8270f99b2ae37fe3ef6a99eda60b9a3737f075bf4a9c2c2e806d3c1"
+  "notes": "La bulle « Éteint tes écrans… » est retirée, et les bulles d'aide ne s'affichent plus quand la boîte à outils n'est pas au premier plan (jeu ouvert).",
+  "sha256": "7a08c7eb658de4842a6545fe4ecd122fdb851c9bfea1d4284f069bdfae3a17e7"
 }
