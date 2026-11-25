@@ -61,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.2.0"
+VERSION = "3.2.1"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
