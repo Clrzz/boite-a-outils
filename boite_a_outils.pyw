@@ -61,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.2.2"
+VERSION = "3.3.0"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -176,12 +176,12 @@ CATEGORIES = {
 
 # Couleurs du thème sombre (codes hexadécimaux : #RRVVBB)
 # Thème « Néon »
-FOND = "#07070c"       # fond de la fenêtre
-MENU = "#0c0c14"       # barre de menu à gauche
-CARTE = "#0f0f19"      # cartes
-BORD = "#23233a"       # bordure des cartes
-TEXTE = "#e9e9ff"
-GRIS = "#8a8aa8"
+FOND = "#0b0c0e"       # fond de la fenêtre
+MENU = "#0f1013"       # barre de menu à gauche
+CARTE = "#131518"      # cartes
+BORD = "#23262b"       # bordure des cartes
+TEXTE = "#e8eaed"
+GRIS = "#9aa0a8"
 CYAN = "#00e5ff"
 ROSE = "#ff2bd6"
 VIOLET = "#8b5cff"
@@ -198,8 +198,8 @@ def texte_sur(couleur):
 
 
 def espacer(texte):
-    """MAJUSCULES avec les lettres un peu écartées (style des petits titres)."""
-    return "\u2009".join(texte.upper()).replace("\u2009 \u2009", "   ")
+    """Petits titres : écrits normalement, juste avec une majuscule au début."""
+    return texte[:1].upper() + texte[1:]
 
 
 def melanger(c1, c2, t):
@@ -1156,7 +1156,7 @@ class Carte(tk.Frame):
     Astuce : un Canvas derrière dessine le fond arrondi, et le vrai cadre (self)
     est posé dessus avec une petite marge. On s'en sert comme un Frame normal."""
 
-    RAYON = 22
+    RAYON = 14
     MARGE = 6
 
     def __init__(self, parent, couleur=CARTE, padx=16, pady=12, bordure=BORD):
@@ -1628,22 +1628,176 @@ def action_pc(action):
 
 
 # =============================================================
+#  LES PICTOS
+#  Des icônes fines, toutes dessinées pareil (jeu « Lucide », licence ISC).
+#  Chaque picto est rangé comme un masque gris (0 = transparent, 255 = plein) ;
+#  icone("bell", GRIS) fabrique l'image dans la couleur voulue.
+#  Pas besoin de Pillow : on écrit nous-mêmes un petit PNG.
+# =============================================================
+
+import zlib
+
+MASQUES_ICONES = {
+    ("save", 16): "eNpjYEADHJ1794PBShMwv+n3if+3QPynX11A/L2Hxf5ngRiiF7+5Aan9+4X/ry4AAkvh898tQXyG/f9BYBWD0MNVYD4jnwAQMIPZYMwL4vPC+TvB6v/vgPKh5q35LwzhQ+3L/i+KjQ93D5B/eC8DQxvMvbf+n/jdBvRP3Z79ULCnjh3dtwwAJWBksw==",
+    ("save", 14): "eNpjYEAB1qcePbkPBNuVQLxLuw7dKigoyDv1UBHIe54xaS9IlP/YfVkQr+A/EPwN4DuxC8RjdAgAAmGGjOcgHgOnABBwQnl+f0BK//hCeBPPOgDBuYkQHsTMvZMweee27b6WAATXdm87x8BgdfHTl/dA8OXTRStUNzMAAMntTUQ=",
+    ("activity", 14): "eNpjYGBgUI1nQAKL/ysgOIwv/2cgeMb/L2xA8KoeJH1ig/MOzpD+7whhWsxf/ted4VI7A2P5kvkW9gvmZTAydJ9n8Pq7ZIEdRIXLP8mZB+Ba2b8kPKhAmLvl/H9DBC/n/3NGBE/1/3xkt8bLgUgAbNQldg==",
+    ("activity", 16): "eNpjYAACczMGZMDy5g0LMt/6/39rZH7L7z/NyPwzR46cRuKK/aup+SuG4Mf9NzH9Hw3lmO3d//Y+E9OrxQwM+sv27zUD8tcbMzAsfsnEdPctkA9VFgPSE4dq5j8xFDuPnsbnJhs0N6P7CeZnANRCMXU=",
+    ("bell", 14): "eNpjYAACk9JSEwYoYJ7//8GD/3OZIby293YMDPbvW8Ec1o9ZICr7AyuIUvyvC6L0/iuCKKP/ciBK7r8hiAr4ww6iOP76g6ieyxDDrnQDCf5X1RBe7Ss+Boa1/8/sB4Mz/zcwMBRPgIMMiCJtIyNtBjjo/PKlA8FjTU1lATMAo74ubQ==",
+    ("bell", 16): "eNpjYAAB3fR0XQY44Fv7HwhW80G5zAd+VSgoVP46wAzhR/+PA1Hx/6Mg/JWPGEEU46MVEP7BvRB63wEIfWEDhN54HkwxfpwI4U/6ANan/z8Rwk/6rweiJvwQhfBFf/QDSeef1wug4PoPZwaGVf+RwBqg6wSQANSFDNNycqYyIIGV//+vQOZzREezQ1gAUoM88A==",
+    ("brush", 14): "eNpjYMAKLI/fLYZzHL+uq/3rCuXYf1nAxHC/BMKxA3FqfumCOTaf5zMx1P6NB3O0P81lYmiAchjkKpkYmv7GgtluZ28XMTT+gXCEPy9t/utxC8Jhrv7DxXClDmpR2v/pDCY/wqA8wb1/b/3exgJzEqNXVSgzjAMAa8Aq+A==",
+    ("brush", 16): "eNpjYMAFGDO3zlZB4s7+f+ntG1E4d9b/ZgaD/0kI2WYGhuD/ochcp6+X2cBcpjn/mxgY7L9el4RId4K5X25CuQwxRQwMtl9uQLhsrcfW6TNYfYJyGWb8O/rircyHm1IQLsuPOUB7M/3EIVyZI//9GNT+Z8Dc5f3/hqb6/p/ycHfnfv///2cCkr/Eo5LlEDwAvdw4/A==",
+    ("chart-column", 14): "eNpjYEABm1yRec8zgATralkknvB/W1Qesy8zEk/tvxoST+O/BoSXKobM+xOEzPuLwquXZ24T5engAvLObUuAAUcGBuuL72HgAKqbGQBKDTHZ",
+    ("chart-column", 16): "eNpjYEADJcWo/P37wVS0OApf5H8mCl/sfxYGv7gYlQ9hYeGLR6PyM/+LoPCz/oui8CO+8fB8i2BYuxbE33uYgYEVjJiZQfy234f3wwHQBRz1e1D4aAAADD5A+g==",
+    ("check", 14): "eNpjYCAKiCNzXL9ZIThu3yYywjle3yeBOLJ97CDODzCHQfbFNk4Gnx+Tocq0Xu4K+zkFrkf71X8EB8gtZWQgFQAA7QESTQ==",
+    ("check", 16): "eNpjYCAf2K5nQ+bafTnNgcS1/3xWEJn7BcJlX28L4Z4TAotznPliz8Dg8PW8MFSh4Lkv9g5fLgjDdQpf+Pr1ogiSUSIXUbhAM9nJ9gMA1ecX8A==",
+    ("chevron-down", 14): "eNpjYCAXMIYwgyjmEEYQJfRhMZDLvPi9IFjSDMhlXvzBDKoWyEVwQFwkDgODri4DRQAAcfANzw==",
+    ("chevron-down", 16): "eNpjYKA6KK2H0PUlUPp/O4hq/18HVdAOEmiHiMIEkLkgARQuA0N1NQNtAABbAxIn",
+    ("chevron-right", 14): "eNpjYMAPmMSQeQEfzJB4zIvxcpd80ELiLULioahE1YZqA5MoAxEAAFJiDcw=",
+    ("chevron-right", 16): "eNpjYCADlNaj8uv/t6MKtBMhUIPCb/tfh0c9GrcWzbTiKgZyAQAhtxIj",
+    ("circle-stop", 14): "eNpFjjsOgkAARGfLxYQoXod4AZbC9QKUVPykWjjJXozCDyWNgN0uuhIRSJzuTSZ5AwCWn+c+xZK4M3X96aIZpC4cwCm1nCBR7jJxVQzaCRAWBIygaCl7bcHHvh+P2L297AKEDdCEwDXNbn+6p8w44JPBcOyNt3kWIKck4QRlbyEeVsNh+PmlEjZgCyXnMmp1VelHtB6lfn5m8+svwxJARA==",
+    ("circle-stop", 16): "eNpFj80NgkAQhd8NMFKBSoJe0RoENYBFyGkb0YNEqzD+XQUK2A5ItpL1jxs4goi+ZA6TeTPzPqCU6jLmqvhKDx9U6r7WP21X5DvPMLxdLrrVVEin9jlStIFtYTeLTrGB9jwAo5jzeAgcn6pDPpBIzmUCzGkcUB/gvK4BLQIy/71JC5tcIKr8F8CnsXI7AVZ5L7KA81XBqpg2/2avJdBKmzwTmWp13r3XM/xDLjpfnqziycL2j9BnzKvp3nL7VI8=",
+    ("clipboard", 14): "eNpjYGBgsKhvaKi3YAADIe8398+fv//GWxDEefb/f66CQt7//8+EGBh8/vGf/A8EJ/j/eTMwBP9lYNMzMNBjY/gbBOZBAfV4AX+ZIRyWfwEMDApfb58Hg9tf5IFiquUNYFCuysAAAD0FOlQ=",
+    ("clipboard", 16): "eNpjYAAC9wIgcGOAAuaA/2Dgzwzmpn77/19LQED7//9vqUAu+8/98/4f3b//6P+5B36yMTCI/c/imLYfCKaxZ/8XBfNhBg0In/tfjwAU9P3lBoou+Q8HiyHeK4CCAKAHAXL1TAY=",
+    ("clock", 14): "eNpjYGBg4PItKfHlZICA/Hd/7t//+y4PzJn1o1qIg0Oo5scsIKfguw0Dw7y5DAw23/MZON9VAYVWLAcS1W85fX4JwHiCv72LboP0rjjECyTvFBbdBfFCX78tZ2C4V+jzRwjE5ancziD8x5v7QzXUWoaa91wM+T9tIBy7nyD7Z32v4mNg4Kv6PgssmPf2x/XrP97kQTVw+pYU+4BdDQAxVjiQ",
+    ("clock", 16): "eNpjYAACDvfUVHcOBijg7fj8Hwg+tfOCuTIX/yz0kJPzWPjnogxI9uJ7JwaG4mIGBqf3F3kYGLr/OgJF9+8HEk5/uxg4vyxhgPEZln7hcPrvieB7/XeI/68E5t+UBZLK/+Pi/yuC+IU/f0wSYFD8H+f43x1sq9z0H+EMnv8d2D8ugzoLaNfyD+wMzX9dYA51/dfEwMB1DuQeEHB+f44T4t7FHrJynkv+XJSG+ucryD9fO3jgPvRMTfWA+A4AOYVKyw==",
+    ("download", 14): "eNpjYMAENdXIvOXLieIlzGVZvpxlbjyEZ/Zp2apVyz6ZQSWtPv38+dEKzNzkysBg8fGjBQOD2yYGhucZIFlLIJHxHMoDAxDv3LYEKNh2Dqjo4nsouGiF5l4AOfwq8A==",
+    ("download", 16): "eNpjYMAKiotR+fv3k8Dng/D5oFz+r/0g/oSvMIHe/70HDvT974Fr6P7/69f/bgi7BGRz1///nVA2xOT2dpgtyDaB2HsPI/iH9zIwtP0+vB8KDv9uY2DgqNsD4++pY8fwKADrRTg5",
+    ("external-link", 14): "eNpjYMAGNt+//+AEkOZTUFAQZfAvOPH/BQNDxu//////YmfI/nvwOQPDvSkGBgbKDDl/MzOAvOcZIG15/zIZfA5Aefn/shhYQaIgXs6/bAbZHzJQ3rRMBgaN/xoMMH3Yeee2JYBB/x8hIM/q4nsweJCG4VoAYkw3lw==",
+    ("external-link", 16): "eNp1j00Kg0AMhV8Rqat6WPdKN0LbGbyIeAKHlM6ZurAu0mSGCII+SHgfCfkBTtQQ0afb8Y/fQPUIUplK4MkLAfc1Znb8IuEQc79jB2UNkWcvMxpjzwOKQl1iRYyjcf0dLtaZ8m1zNm9ztg+IQXOf7hHFtVeu2jnz3F4P3vwDgkJIlQ==",
+    ("folder", 14): "eNpjYEAGHIvu3r+7gA3KS/9YWlD2dqICEMgxM9ReAgoF/vwPAvekwTwGfgMgMH1WDOFBwKVacnnld1lgHJZ75Xrf/sPBVx0GGd8AKPCVYUAFAMy8NEk=",
+    ("folder", 16): "eNpjYEAD4dv3798WAufq/72yf/+NvzYwfvp/SQYGzlvv9oPA9nCGrP+iQFG1pWD+lb96ED4USP1Pz0bmi/3Pojbf/39/ARxM+O/HvPbffzj4t4YJ6FgBOOBkwAAA/YBEUA==",
+    ("folder-open", 14): "eNpjYEAGHIvu3n+8jg3KS/9YWlDwrl9BQUGKkYGh9hJQKOjnfyA4xgHhMfAbGBjY//MA8Zi6z54Hgf+LWIG82B9tDSDQ8iWy9hLr3YkQA5neJtdeEj0oDuEZ/teEmAIGRc8Yyu+yQDmMu5Yy6H37DwN/nBgYZHwDIMBfkwENAABniT7B",
+    ("folder-open", 16): "eNpjYEAD4dv3798eAufq/72yf//NP9Ywfvp/SQYGrltv9wPBClUGhqz/okBR9aUg/qtrUD6TABhU/BcC851e/4eCtcxAPuu96wUQ0P8/CMjP+O8ONdz4fxiQv24/zLLi/xJAPgs7jL/1GkM22D4IYPk0lcH/f38BDEz778fAvPYfzLL/fzeyAlVxCsAABwMmAADM81IZ",
+    ("gamepad-2", 14): "eNpjYMADGGPW7QeDddGMDAzVv1dOAIOVv6sZWF4XM7jxgFWVvmJW+a9n/qeGl4FBeK/zfxWn/9r//v8vYKgwzpP47xj7hYH3ZxQzQ6MxA8O3mKK7DAz6HgEBLmwMDPeLCh8w8p34DwQn+BgfFmj83HTxrhIDg/K9i5t+qjM4LpsoDDJfZNIyR3yuZAAAbwI5Ng==",
+    ("gamepad-2", 16): "eNpjYCAEmFxyC8Ag14UJyBU58R8OTggzMMz9lSAqAAaiib/nMDC8XM5gtpoVpJGZecVLBq7/5Zar/1eKA/mr1lT851L/H7kKqDOcobjE0jL6v7rzfzvmov/yDEA+A4PDf6eo/2oM4tFcAgJcQB0a/yPT/0syiB4EWXZQlEH6f5r7/zrtc19qCwpqv5zTrv/vwrju//+XtiDrbF/+/7+GkYHJK0kc4nDxJE8mgr4DAJjhS4k=",
+    ("globe", 14): "eNotzksOgjAUheEzrU58LEMTXQBxboCtgIMyoaykCaQb0RiUJeBzC4ImSgpaHwU5sz+5yf0AoGN7nk3wn5t/9XKnCV6y/Wa7C0quYyEN8z2ZfuaGdEFyH1EMxCFYRqxnD2cGBCf0Xya9C1EmQiRSiAelhRCyrYJaaoCjry8PGCqze2OIlsAqRHDtwK0MW43GypxV9X8u/XQdp0zyBuNktezitFCi1Vaj/gHze1WQ",
+    ("globe", 16): "eNpdj78OwWAUxY9JCbt/L0IMfEjViDfQDsz+7AwaXoP2McyaqHyDp+hQVE3td31FDE5ykntyb3LPD5BS1MlEVfBV3gxI6r7Ov2OFR9bT80Ir4pVky32m02BII+bzHLCNm3DcVOp8BIs3yDx2KIoZsBAF7B8KIw09qgF16sqhYZBzuEgfHLpI6/+5SSo0qgI1ea9RI32zUBJTYC6KsK9prOI23OTfCR2xBLKuzwzqD0hv+W7m09cOPC+wI17+8oQJT2jmfoTaeNz90L0A5GBxUQ==",
+    ("hard-drive", 14): "eNpjYEAD6v4BQOCvBua4/fkPBn9cgRzG8ysYQYKMK88D6aA/GhANGn8DGRgvLoPpX36RMez/ngVQsOd/aN27BXDwrq72EqMdo44wWOml2tpLkm+ldqVBeeV3WWCmsNwr1/v2Hw6+6jDI+AZAga8MmpMBINE/6w==",
+    ("hard-drive", 16): "eNpjYMAEHAJgwAHl9vz5DwZ/usFcx/9LCsBg6X9HEP/gE6hCjqcHgKTD/2yYObn/7RgY9j1mh/HZH+9jcPv/bD8cPPvvmv//KIJ/9H9+9n9RZmYGVogGsf9ZQP6qNVzfwpH4lpYM0eIwvv///gI4mPDfj3ntv/9w8G8NEwMDpwAccGL6FQDRWVQ6",
+    ("layout-dashboard", 14): "eNpjYEABDffu37+op3fx/v279QwMT1cVFDyrrn5WULDqKQPD8wwGhku1tZcYGDKew3jR/4HgKIzHYBkQ4MPPwPDg2IIF70pFJi5YMM+LgcF73oIFE0XK3i1YcOw+A4OIX0CAAwPMlKMg/VGoZsJ4TxcmJDyurn6ckLAQaHv9m/fvb+rp3Xz//k09qpsZAI/6T4c=",
+    ("layout-dashboard", 16): "eNpjYEADepv2798/jZNzOpDapMvAsPn9/v1H/8fF/z+6f//7zQwM+/czMIj9z8r+LwphQ/kZ/2sKCm7vhfPV3/7///9fFpzPwCIgIMAFNH8j2LxouPk6YPvY4eYzcAAVMjHAzc/8BTTouTqcv/d2QUHN/wx0++F8qPkxYPM2wM3nmAakNuqg+5YBACnTZ9M=",
+    ("list-checks", 14): "eNpjYMAPvCYwiCoAgQADQ562148ejp//geAaA8P6V98nMzIoGwCBNAMD57oeRjSdLBMXAEEllMc6A8RrBLPTt8IVTfDK+psGt6Hv178cBrgNjF1ZQBUwG/AAAEVRJWw=",
+    ("list-checks", 16): "eNpjYCACGBsh2OzsDI5f17Ou2w8CxQwM6y8GfbkgiuA7fPl/VhhZs+1KQUwTEeqx8RtKECqNjBl6/tch+Bu+rv7fiaRe9ML/bhT9QiEMJAAAp6YxYw==",
+    ("mic", 14): "eNpjYAACvrRUPgYY4L315s1NHhgv7LuIyI9QGC/jOQPD8wxsvKYECC+hCcTbOwnCm7QXxNs43/+nktJP/wUbQLyaZ4LHfvw8Jvi8GsQTebWcJySYd/lLYbAxtu+ezF/w5J0N1AaptidP2iThTmNYvpwBCdjaQmgAcukwMg==",
+    ("mic", 16): "eNpjYAAB4bg4IQYEkH/6//9TOQR/9icLi0+zEPx9BxkYDu1D8Pfvh2AIYIXxWcHc8G88ED7Pt3AQP/u/KIQv9j8LxI//r7TuISfnw3XK/+NAfP3/aa5/nz7965L+Xx9swImn8t7r1nkpPDsOMV/z7ctMNfXMl281oRaqH/0PBEfUEQ7Su3pVjwEZ7N2LwmWwtIQyAKUQPys=",
+    ("mic-off", 14): "eNpTCWZgYODNzBRgAIGAf4UMXNdefbjKCebm/iuU3ysq8j2CAcrNB5LPMxhg3CIErymh538+w93YhCYQb++kjF//8vgYJ+0F8dYsCP09HWjy7I0gXv0Dnks/f//P1dUG8cQ/TuZNCC8HyoKB8+cbnd3Xv//LgXAl254+bVcs/JcNtXL5ciBR+C8AwrO1BZERagCcKDso",
+    ("mic-off", 16): "eNoTCGUAAq6YIDYGMIj638PAIHfr///rUmA+4+T/vQy1n+0cPk6FKGCc+L+PQ5GB4eBeBiiY+L8fSO7fD+OzTfw/DcxnBXPDv/GcAapYvJjnWziIn/1fdP9vkBax/1kgftJ/tbX3Z/yfzCj/PxHEN/2f5P3v2e//kzkaxMEWXnwq47p9w5L/UAcwWHx/GsknEfft/ySogM29/0DwYOn/iVABZtubN11ZGfrhAgx7wa7t+R8F5VtagqlQAQCfOE3H",
+    ("monitor", 14): "eNpjYEAGHIvu3oeCuws5Mj6WFkBB6ce02ksIdZdqyeXVXEHwrlZ7/j2yHwqO/HVnCO6dMGHCzZtAojcIrMIz4cSJBE+Y+ivvP39+f4UBAwAA7Is5/w==",
+    ("monitor", 16): "eNpjYEAD4dv3w8H2cAb9v1cQ/Ct/9TL+SyLUSv1Pz/4viuCL/c+iNt//f38BEJSUgMgJ//2Y1/77Dwf/1jAxMHAKAMHhwyCSE6LNbO/+9+/37zWDGQPkAwGCjwwAOHtLqg==",
+    ("moon", 14): "eNpjYEADjH7LL1XCOPwb/9z7YwPlMO1+bLxoE0wq6pcew45pMN6WlQwMU8/CeLdLGRj0f5cBWTZ1DAx3ioGMhF/Hpm/6c5uBYetKkAqNru2zbmxhYAj/bQDRYvgnDGj3zkdGII7x4x2MINt3/1lbVLT2zy5+iP3R2x492hbFhO5iBgCK6y5E",
+    ("moon", 16): "eNpjYMACnCZuKUbwxHb///+/Ac6VuP8p9fAVZjh/zycjho+9cK7z/xwGhk99cP6kLxwMDAduwdVvOwUk/P9PYmJgYG4tZGDYchokWvv/Wm/v9f+bGRj6v7CDBHz2vH9/5D/QGMf/aTCt6f8dgOSBD4YQrtGH/SBK8v7nEl4GBt6Sz/clweLiW/9/P3f+x/8t4jCNdhO2bJlgi82nDABTQjyC",
+    ("pause", 14): "eNpjYEADagEODAwOAapgjuCX//+jov///yII4mn817hUW3sJSNGHh2o7g3yAJQODZYA8uosZAGG6OhI=",
+    ("pause", 16): "eNpjYMAEHAJMDAxMAhxQbuav/8/V1Z///5UJ4e+9XfM/I+N/ze29EP7+/WL/s7L/i+7fPzB8dPdk//v/Vk397f9/WVAPcAmwMDCwCHBh8SoDAB9/TAM=",
+    ("picture-in-picture-2", 14): "eNpjYEABMr4BUGDFwKD77T8c9DKU32WBqap4wFB7Ca4n4zkyz+cAjMcoICDAxwDl6T8BmXJRFMKbecbRwcHlZV7hM3UFWYYVy0Fil2ql7gOVOC3cxsjAwHqvnIFFx0CXKfAvSN9XHajp6v4BAb4yqG5mAADDjjgR",
+    ("picture-in-picture-2", 16): "eNpjYEAHnAIwwAfksaz99x8O7mgyhP3vL4CB4terGLL/iyK07t+Pwc9C5hcXI+T5gBZwMsD4mndB5v9bywLlr3pVDLRgwv+QjP+SUJOAQOx/lvG/K/v3r2OF8xkCNoH4i19D1PtBbdKAmLeGCW431D50AAAHkUlA",
+    ("play", 14): "eNpjYEAFohdSGRE8jf//96si8aLPfy9ngfM0WCq+nTOC8xgYVA/86eSE8xgY0z7cVkHwUt/dVkJS2cWJzRRUG5BtF7uL7DJkAADxbiaL",
+    ("play", 16): "eNpjYMAAJZ08KPz9/x+4o/DvXP6/SBiJv5+t9serSCQ+A4PW0f9bZJH4DEw5nz5lMyH4DAxyW/4f5kDiy27+f5AVRX0OEw7z2Op+vIzE7Z7/91HcW9TLw4ATAAAoszG8",
+    ("refresh-cw", 14): "eNpjYEADjH7LL11aHcnktgnI4d/4Z21lxbo/Z9qeMzAw7XlkDFKhdf4PkBf1Sw/Esf3z//9bBoYtK8GaeQICAlwYGG6XwkzTqWBgaDKE8UpuMzA4BAT4coB5q7YwMLz9//+PNYhj+CeMgeH537OKII7x4x2MQF7r2R9LC4rW/tnFDxQ74M2WvPPRo21RTOguZgAAmYo1xA==",
+    ("refresh-cw", 16): "eNpjYMACnCZu2TLFh4mhpBjEE9vz/9u5c1//XzDavx/Ilbj/KY2dgYEz9v6nJyD+ns9GYE1xbb/+A/lO/3PAXK5v////38rAMOkLO8RQDgEBUU4Ghm2nEPaAzC8uRvBPbwGaKyogwAHhsn/pA6oHGvONC8xP++/AwLD//6+OODDX6MM+ILn/ycdn8UB53tLP9yVB/P2ax/5/PXv+x/8t4iBVQPMZ3aZs2TLBFptPGQBEWkYx",
+    ("search", 14): "eNpjYEADIs0Hb+wq5IRwbF696Cud9fm6Mogj/W4NL5CSOXmdHUh13WMHK5H6Fg8kz3ZCtW9dBCQe5kF5M7cBiRP9UN6uuUCi+rUQmKP7xx9I8t47JQekjB9fZwQJKl38vm7qrr/n/+WC1bAmLdoxK4Ah428asgvTtqI5GQCWTCq5",
+    ("search", 16): "eNpjYMAE4iUrd86JYIFxoz7/u3zkyf/LShBu+L9dIJbP8ydSIK7Ixx3MYHHld+tBVOE/Zai+yn8yQHLdZZg5Wv8jgOSuozC+zP9kIDn3BROU7/jfHWT8/1Aof/VXbiDJcumNBpib878BTKs++1BrIOW69P//Lqg5W/8DwZfmSf87oToVojJ9eBkYev/XoHqsphDDrwAWGTei",
+    ("settings", 14): "eNpjYAAC7twcLgY42Pj27UYoU1FD4Ed0zHcBDUUgJ+3v/+9PxcQefP//N5WB4XqnZbKom6tosmXXNQaGHXdUWY/8+XOYVfnudgYGiRvTvX6pqPzynHFDgoFB/MZU/59KSj/9p10XY2DYdUeZ49iPn8c4VO7uZGC41WOZLBYSLJZs0XuTgSHj///v94WF73///z8DaKGGpsD36JhvAprqUOdse/t2C8KdHKmpHGAGAPUDQ3s=",
+    ("settings", 16): "eNpNj78OwWAUxY8v1aSDV1ALE0kfwp+EJ1BThw6IXT1B7dKtb8AnIiFM3Sw2mogFQ6futeh3tTrUmc5JTn73HiBVyTBKyMXORGeW5waZJtUzX1zcXE9Ua8JzbwsJmIntO9SBQRhthQUcrwWZdTnvsiL8AzChJTrx4xG3wWmSAOZUXj8V5cUrZKdAm1T+yvOYVmjFQRA3k/4Q2F8gs17Kkwv+DrDE5ndPD6ONmAKSc3e9j6p+PPfuSNmPGo1GpP3tORGd/vZA0ftK5r6CTliK",
+    ("skip-back", 14): "eNpjYMAOZLRBZHk4mOP0eieI2jsJRBb++bQXxuNc/KdkMownd+a1E8MkKE//1Rk5BjhP9yUyD1Ul0JRFSKaAbfi8F8X23Sgu00V3KwBwoirw",
+    ("skip-back", 16): "eNpjYMAN+MCkeDSUm/A9FERl/hcBUSyT/v/PAjGy/osCSZH9/+ch8Q0efI0UQ/Ajv941YEDwS//vEmJgEIXzq9D4DBGo6jHMA9s3H8LP/C+M4h4k94aj+ocdix8B7bs32A==",
+    ("skip-forward", 14): "eNpjYEAFalLIvN2vncB0WDmI3Pv5dyGInrQXzJtU8mcRJ4LH4PT6jCyCxyB/9qU+Eu/0SwPsKkuRTfn8uwBhw67XjmDbw8G2a8gw4AAAlMIq4Q==",
+    ("skip-forward", 16): "eNpjYMAALKjc8O/xUFa0OIjM/v9/IliJyP9MEJX1f/7/fSJAhtj/LIi8aNTXBwbIfAaDe18jYPwsIJ9BePf/chT+jv9lONSjm4dpH9w9GSAqDM29DHwMeAAAJ6M33Q==",
+    ("sliders-horizontal", 14): "eNpjYAADzSAIbRIQEOAvXHsfSJkwMJz/////v7R6IPn/HAMUlJ1mQAIcYnDmFn04s2rBgn+hQQtAoJKBoRHEiwLzGsHS+0wY0AE/MsfzM5gC2f7/f28EkDjLwGAdAAJqwX8DAqzhKsVSQSQAqP0wkQ==",
+    ("sliders-horizontal", 16): "eNpjYIAA8Wgog1kACHgZMv8rA2lmBoZV/0EgrBhMrWJgsCwAglzx7P81QNqSAQbMVrPC2QxITBCI+MaD4BTv33/rvwSQBIFiTD66eizmQcRWm4FpsHuALhH7vxrsHoh7/6+WBZNQ/wB9IvK/COwfOIgWB5EAI7VADA==",
+    ("sparkles", 14): "eNpjYAABHx8GBOD49pWdgeGwCYTn8P+/vcC2f5c9wLzGmzcbeXr+bbYA8w5Pn36YgWGJFgMDp0Pdvn/Orv/21TlwMgR8/39nljMDg8usO/+/+3sAeTOBPGcg74c3kkpHTgYGgyWsQFNmHIbYdf1/E9CGW40QntkSbpDtDgiXsX/9xo7kUJ9ACA0AiXU7PQ==",
+    ("sparkles", 16): "eNpVj0EKglAYhAfCGyjPhZGHKKFlRt5AAj1FgkUXsY0nyF3aGTqCrjxBC21pxmS+t7BvNR8MP/MDI94OU4z+rQNOpin3SR/rjGch/dK2Ca4k99KrvCgxi7iQumIUcQkRDtkM0pqtZb1Yp4GJbc+miG3AjouGH9ft+JR+vLfsNhCyP1d9IBRwePjdGznxoaG65SUmnjTDHsXQl3sn6H1v/D3oeip8AXj9Tfs=",
+    ("square", 14): "eNpjYEAB1qfuQ8EpawaGS7sKoGD3RQaG5xkwVRnP6cE7ty0BCradY2CwuvgeCi5aobqZAQAJlTQh",
+    ("square", 16): "eNpjYEADHJ1790PB3g52Boam34dh/MO/GxkY9h5GqD28h4Fh/34EH8SmNx/FPXsZGNqQ3dsG9E/dHhh/Tx07um8ZAByHQ+Q=",
+    ("stethoscope", 14): "eNpjYPAwZuDLYWQAA45FX6Yx2P0/pgfmZXw8UcOg+/rEbjCv9hJ2qvrzHp7yW2Be62mpf01vc93/qgE5TOdmcb4789uH6eRVAwaR+d80GUz/dTAwSB77/+Xfa3eggr+BIFVWr+byAWn5/9ZgI6Y8FGNgYFz8iBXME7z2tK3kyHcXiOsYBPquPlxrxIAOADkmN14=",
+    ("stethoscope", 16): "eNpjYBCPZgBjKAi/8F+cIe//GlUIV//vWyA/9//baxB+xn8DsPr8/0JgfvZ/UThtlSqNzA/99/+laPx/ZTC/8j/n+htO/yO1/leAuMxnLjO0/b7x15hh449gBgauGf+jGDiW/49kYBA68f/hsU//W4CKssBmsaYe+7/aFmoG2CwkMyAAYQYEIJkBAaypa3fPtWXAAgD0fEh7",
+    ("trash-2", 14): "eNpjYGBg4MlraMjlZoCCHe/On3+3HcwUUFX6naegkPdbSVWAgeH6fzi4xsAgfXK5uQEQmC8/KQ1UuncSgyIvryLDpL0MEN65yspzCN6l2tpLxPHSLSzSobxd0yAumr4LRBb/vHAeCC78LATxGCMbwCCCkYEBAEAgRD8=",
+    ("trash-2", 16): "eNpjYAACoaSCgiRBBhgQvPcfCO7CBRL/2wgI2P5PAHOK9++/9f/o/v1H/9/av78YyAfzQAAoAuQzZP8XhWgT+5/FAOVHi4tHI/FF/mdm/hdB8IGsLDBJJJ/nW0TENx4k81kZgAjKj/tvJwAG9v9jQXz+u/+h4C4fxHtA34IA2McAhghYnQ==",
+    ("triangle-alert", 14): "eNpjYMAAVteumsM5bLd2773OCuMVfZNT+J4H5Yi8b9LSbH0nDOFNe8K9bBnPs0lgjs6fGIblyxnif2mCeLuOMzIsWczAdGorkOPzD2i4uDjQmn/uDKw3FwGF0jOAxLKrLPFfpYGMgAAgIfstOu9DWgIUpH/K4trw+OHjp89fvHrz9u06TlQHAwCwIjQp",
+    ("triangle-alert", 16): "eNpjYMAGtFev1kPicj149fo+B4Lf8N/G/n8NnCvzdSUDw5rPUjD+0u/yxcWKPxZAuZb/Whj272do/2cK5jKeeMoD4vM+P8oI4sf+j2Ng2LuXgSHpfwSQy/3kFFDY0pKBgensQ04GhqZ/VgwQPoPt/1oG6W/LQJpWrQWTXyRz/muDWMzMIFLvf7rlv5v74eDmX1OGsJ0I/s4oDJ8CAFOMRFI=",
+    ("upload", 14): "eNpjYMAAzMuWMsM5LMv//1/GAuOs+nDhwseVUG7FR4vlyy0/lUN4UtoMy5cz6EjBdQJ5SADO2+QKJJYtAxJumxgYnmcAGcbGQCLjOZQHBiDeuW0JULDtHAOD1cX3UHDRCs3BAOyIKvo=",
+    ("upload", 16): "eNptzzEOgCAMBdA66aSHxdnRRAT1QJCacCYXGKooAkb+0v+adChAMdP0ISfiGQVZS3OkJLnvC4nA7lgBsdqONiyuiXiPGG8oumfJvj+NxW1+6bs2yUYDjM5giHEjQDOo12qof4+eza04QA==",
+    ("volume-1", 14): "eNpjYMAAGupIHO/vX9nhHL+fJ/4LQZhmH/7/n2z3X4jXF8SreRBgwWD7X8jqnyGQV3sJSNj9F2Y404TMO12HpNLynzmQZ/ry//8p9v+FIaag2gC2/cdHdlwuQwAAWaQnIw==",
+    ("volume-1", 16): "eNpjYMAGBJhRuB7friILeH7/+V8UxnEvqP1xtgbOd/v///9+waz/ohybLED8rP8qPCBSlO3+ERA/G6wSRNb+40DhN/7jQlbP+vAYSL0L3LwN5hALCuqQ7cNwD1jg61UWfP5BAgBNPzOM",
+    ("volume-2", 14): "eNpjYMAAGupIHO/vX9kZGHi9wBy/nyf+CzEw2P0LZjD78P//ZLv/Qry+DNOectQ8CLBgsP0vZPXPUOKvR+0loFq7/8IMZ5oYHhTAeafrGO4VwlRa/jOX/ONp+vL//yn2/4WBpsx4wo5sQwDE9h8fEbajuQwBAMjkM0w=",
+    ("volume-2", 16): "eNpjYMAGBJhRuB7froIEmBkhXM/vP/+LAundi4AC7gW1P87WgPll/9MY3P7//79fMOu/KMcmC4bDz1my/qvwMDAA+Wz3jzAE/7fOBqsEkbX/OBT/xyP4jf+4FP/HwdWzPjzGEPTf0gVu3gZzht3PmRncCupg9hX9z0Rxz44FMAd+vcoCpJhw+QcJAADoSENl",
+    ("wrench", 14): "eNpjYAADyZTqIFYGKAj68vTJ/3goR+9Ho9OXFRypENnZe6W+LOdY+98dzDtWp/y7dd3Ht+Vg3o4FDJG/3tu8BOu0/TKFgUFepP2DMJBj83klx+z5Fdt+hQI5Vp9Wc6z5tOHMdH0gx/TjGo6Vn6ygdh3fzrHiszXMGWe2b/hiB+MwWF27bMWAHQAAJlo1KQ==",
+    ("wrench", 16): "eNpjYIAAJqu0IAEGOLC4/f///0+cMK76pxt2vf86GPig/M0vZdr+9zK0v+OFaP5RK/Z/DWPn//9+YD73/wyWC1+W/p/7PwYi/34hg9iF/70e/x1BXMaJ/2sZGFjEJe7fYQVxJ/zvYWxblN7w8rM1SLr/fy9QxZf/3zfrgbh9//uAKnoZeVnBZqX9n8Aw4X8f3KWbLzD2Ap0CB43/TgNVIAB7y7YcRgacAACt/UVY",
+    ("x", 14): "eNpjYMALxJEp4d8ZICrjtxCYm/E3A0rAuAgOiIvEQeWhqEQxBc0GFNtxAwAUFhov",
+    ("x", 16): "eNpjYCAZlNZD6PoSKP2/HUS1/6+DKmgHCbRDRGECyFyQAAoXnY+mHs28Wph9tRB+cRWEriom3S8MAD+AIlE=",
+}
+_IMAGES_ICONES = {}
+
+
+def _png(largeur, hauteur, rgba):
+    """Fabrique un fichier PNG (en mémoire) à partir des pixels RVBA."""
+    import struct
+
+    def bloc(type_, donnees):
+        return (struct.pack(">I", len(donnees)) + type_ + donnees
+                + struct.pack(">I", zlib.crc32(type_ + donnees) & 0xFFFFFFFF))
+    lignes = b"".join(b"\x00" + rgba[y * largeur * 4:(y + 1) * largeur * 4] for y in range(hauteur))
+    return (b"\x89PNG\r\n\x1a\n" + bloc(b"IHDR", struct.pack(">IIBBBBB", largeur, hauteur, 8, 6, 0, 0, 0))
+            + bloc(b"IDAT", zlib.compress(lignes)) + bloc(b"IEND", b""))
+
+
+def icone(nom, couleur, taille=16):
+    """L'image Tk du picto `nom` dans la couleur `couleur` (ex. "#9aa0a8"). None si le picto n'existe pas."""
+    cle = (nom, couleur, taille)
+    if cle in _IMAGES_ICONES:
+        return _IMAGES_ICONES[cle]
+    masque = MASQUES_ICONES.get((nom, taille)) or MASQUES_ICONES.get((nom, 16))
+    if not masque:
+        return None
+    alpha = zlib.decompress(base64.b64decode(masque))
+    cote = int(len(alpha) ** 0.5)
+    r, v, b = (int(couleur[i:i + 2], 16) for i in (1, 3, 5))
+    rgba = b"".join(bytes((r, v, b, a)) for a in alpha)
+    try:
+        image = tk.PhotoImage(data=base64.b64encode(_png(cote, cote, rgba)).decode(), format="png")
+    except tk.TclError:
+        image = None
+    _IMAGES_ICONES[cle] = image
+    return image
+
+
+# =============================================================
 #  LES BRIQUES D'AFFICHAGE
 #  Des petits éléments réutilisés partout (boutons, onglets,
 #  interrupteurs...). Les écrire une seule fois ici garantit que
 #  toutes les pages se ressemblent.
 # =============================================================
 
-SURFACE = "#15152a"    # fond des boutons discrets et des lignes cliquables
-SURVOL = "#1d1d36"     # le même, quand la souris passe dessus
-CHAMP = "#0a0a12"      # fond des zones où on écrit
-ETEINT = "#55557a"     # texte désactivé
+SURFACE = "#1a1c20"    # fond des boutons discrets et des lignes cliquables
+SURVOL = "#22252a"     # le même, quand la souris passe dessus
+CHAMP = "#0e0f11"      # fond des zones où on écrit
+ETEINT = "#5f656d"     # texte désactivé, petites infos
+PISTE = "#1e2024"      # le fond vide des jauges
+NEUTRE = "#5a6068"     # jauge « rien à signaler » (disques...)
 COULEURS_ACCENT = {"Cyan": CYAN, "Rose": ROSE, "Violet": VIOLET, "Vert": VERT}
 COULEUR_NIVEAU = {"alerte": ROUGE, "attention": ORANGE, "info": CYAN, "ok": VERT, "inconnu": GRIS}
 
 
 def police(taille=10, gras=False):
+    """Segoe UI, et Segoe UI Semibold pour ce qui doit ressortir (plus fin que le gras)."""
+    if gras and sys.platform == "win32":
+        return ("Segoe UI Semibold", taille, "normal")
     return ("Segoe UI", taille, "bold" if gras else "normal")
+
+
+# Les émojis du début des textes de boutons deviennent des pictos fins (voir icones.py)
+EMOJI_VERS_ICONE = {"🔄": "refresh-cw", "🚀": "play", "✅": "check", "✓": "check", "💾": "save", "🔍": "search",
+                    "🔎": "search", "🧹": "brush", "📂": "folder-open", "📁": "folder", "🪟": "external-link",
+                    "⬇": "download", "⬆": "upload", "✨": "sparkles", "🩺": "stethoscope", "🌐": "globe",
+                    "📋": "clipboard", "⏳": "clock", "⚠": "triangle-alert"}
+
+
+def separer_icone(texte):
+    """« 🔄 Actualiser » -> ("refresh-cw", "Actualiser"). Sans émoji au début : (None, texte)."""
+    morceau = (texte or "").lstrip()
+    for emoji, nom in EMOJI_VERS_ICONE.items():
+        if morceau.startswith(emoji):
+            return nom, morceau[len(emoji):].lstrip("\ufe0f ").strip()
+    return None, texte
 
 
 def pluriel(phrase, nombre):
@@ -1661,20 +1815,29 @@ class Bouton(tk.Label):
     """Un bouton plat. style = "principal" (couleur d'accent), "succes", "danger" ou "discret"."""
 
     def __init__(self, parent, texte, commande=None, style="discret", petit=False):
-        self.commande, self.style, self.actif = commande, style, True
+        self.commande, self.style, self.actif, self.petit = commande, style, True, petit
+        self.nom_icone, texte = separer_icone(texte)
         fond, encre = self.couleurs()
         super().__init__(parent, text=texte, bg=fond, fg=encre, font=police(9 if petit else 10, True),
-                         padx=10 if petit else 14, pady=3 if petit else 6, cursor="hand2",
+                         padx=10 if petit else 14, pady=3 if petit else 6, cursor="hand2", compound="left",
                          highlightthickness=1, highlightbackground=BORD if style == "discret" else fond)
+        self.poser_icone(encre)
         self.bind("<Button-1>", self.clic)
         self.bind("<Enter>", lambda e: self.actif and self.config(bg=self.couleurs(survol=True)[0]))
         self.bind("<Leave>", lambda e: self.actif and self.config(bg=self.couleurs()[0]))
 
     def couleurs(self, survol=False):
-        base = {"principal": ACCENT, "succes": VERT, "danger": ROUGE}.get(self.style)
+        base = {"principal": ACCENT, "succes": ACCENT, "danger": ROUGE}.get(self.style)   # un seul bouton coloré : l'action principale
         if base is None:
             return (SURVOL if survol else SURFACE), TEXTE
         return (melanger(base, "#ffffff", 0.25) if survol else base), texte_sur(base)
+
+    def poser_icone(self, encre):
+        image = icone(self.nom_icone, encre, 14) if self.nom_icone else None
+        self.config(image=image or "", padx=(8 if self.petit else 12) if image else (10 if self.petit else 14))
+        if image:
+            self.config(text="  " + self.cget("text").strip() if self.cget("text").strip() else "")
+        self.image = image   # Tk oublie l'image si on ne la garde pas quelque part
 
     def clic(self, _evt=None):
         if self.actif and self.commande:
@@ -1683,14 +1846,16 @@ class Bouton(tk.Label):
     def activer(self, oui=True):
         """Bouton utilisable (True) ou grisé (False)."""
         self.actif = bool(oui)
-        fond, encre = self.couleurs() if oui else ("#12121c", ETEINT)
+        fond, encre = self.couleurs() if oui else (CARTE, ETEINT)
         self.config(bg=fond, fg=encre, cursor="hand2" if oui else "arrow",
                     highlightbackground=BORD if self.style == "discret" or not oui else fond)
+        self.poser_icone(encre)
 
     def changer(self, texte=None, style=None):
         if style:
             self.style = style
         if texte is not None:
+            self.nom_icone, texte = separer_icone(texte)
             self.config(text=texte)
         self.activer(self.actif)
 
@@ -1706,9 +1871,9 @@ class Interrupteur(tk.Canvas):
 
     def dessiner(self):
         self.delete("all")
-        self.create_line(11, 11, 31, 11, width=18, capstyle="round", fill=ACCENT if self.valeur else "#2a2a44")
+        self.create_line(11, 11, 31, 11, width=18, capstyle="round", fill=ACCENT if self.valeur else "#2a2d33")
         x = 31 if self.valeur else 11
-        self.create_oval(x - 7, 4, x + 7, 18, fill="white" if self.valeur else "#9a9ab8", outline="")
+        self.create_oval(x - 7, 4, x + 7, 18, fill="white" if self.valeur else GRIS, outline="")
 
     def basculer(self, _evt=None):
         self.valeur = not self.valeur
@@ -1727,7 +1892,7 @@ class Interrupteur(tk.Canvas):
 class Jauge(tk.Canvas):
     """Une barre de progression fine aux bouts arrondis."""
 
-    def __init__(self, parent, couleur=CYAN, fond=CARTE, epaisseur=7):
+    def __init__(self, parent, couleur=CYAN, fond=CARTE, epaisseur=5):
         super().__init__(parent, height=epaisseur + 7, width=1, bg=fond, highlightthickness=0)
         self.couleur, self.fond, self.epaisseur, self.fraction = couleur, fond, epaisseur, 0
         self.bind("<Configure>", lambda e: self.regler(self.fraction, self.couleur))
@@ -1736,10 +1901,9 @@ class Jauge(tk.Canvas):
         self.fraction, self.couleur = max(0, min(1, fraction or 0)), couleur or self.couleur
         self.delete("all")
         larg, milieu, e = max(self.winfo_width(), 40), (self.epaisseur + 7) // 2, self.epaisseur
-        self.create_line(e, milieu, larg - e, milieu, fill="#1c1c2c", width=e, capstyle="round")
+        self.create_line(e, milieu, larg - e, milieu, fill=PISTE, width=e, capstyle="round")
         if self.fraction > 0:
             fin = e + (larg - 2 * e) * self.fraction
-            self.create_line(e, milieu, fin, milieu, fill=melanger(self.fond, self.couleur, 0.25), width=e + 6, capstyle="round")
             self.create_line(e, milieu, fin, milieu, fill=self.couleur, width=e, capstyle="round")
 
 
@@ -1757,8 +1921,8 @@ class Onglets(tk.Frame):
 
     def ajouter(self, nom, carte=True):
         """Crée l'onglet et renvoie le cadre à remplir."""
-        bouton = tk.Label(self.barre, text=nom, bg=self.fond, fg=GRIS, font=police(10, True), padx=14, pady=6, cursor="hand2")
-        bouton.pack(side="left", padx=(0, 6))
+        bouton = tk.Label(self.barre, text=nom, bg=self.fond, fg=GRIS, font=police(10), padx=12, pady=6, cursor="hand2")
+        bouton.pack(side="left", padx=(0, 4))
         bouton.bind("<Button-1>", lambda e: self.choisir(nom))
         bouton.bind("<Enter>", lambda e: nom != self.actif and bouton.config(fg=TEXTE))
         bouton.bind("<Leave>", lambda e: nom != self.actif and bouton.config(fg=GRIS))
@@ -1774,7 +1938,7 @@ class Onglets(tk.Frame):
         self.actif = nom
         for n, (bouton, cadre) in self.pages.items():
             if n == nom:
-                bouton.config(bg=melanger(self.fond, ACCENT, 0.16), fg=ACCENT)
+                bouton.config(bg=SURFACE, fg=ACCENT)
                 cadre.pack(fill="both", expand=True)
             else:
                 bouton.config(bg=self.fond, fg=GRIS)
@@ -1807,7 +1971,7 @@ class Bulle:
         self.fenetre = f = tk.Toplevel(self.widget)
         f.overrideredirect(True)
         f.attributes("-topmost", True)
-        tk.Label(f, text=self.texte, bg="#1a1a2e", fg=TEXTE, font=police(9), padx=8, pady=4, justify="left",
+        tk.Label(f, text=self.texte, bg=SURFACE, fg=TEXTE, font=police(9), padx=8, pady=4, justify="left",
                  wraplength=320, highlightthickness=1, highlightbackground=BORD).pack()
         f.geometry(f"+{self.widget.winfo_rootx()}+{self.widget.winfo_rooty() + self.widget.winfo_height() + 6}")
         self.surveiller()
@@ -1852,14 +2016,22 @@ def champ(parent, largeur=24, cache=False, valeur=""):
 
 
 def petit_titre(parent, texte, fond=CARTE, couleur=GRIS):
-    """PETIT TITRE GRIS en majuscules écartées, au-dessus d'un bloc."""
-    return tk.Label(parent, text=espacer(texte), bg=fond, fg=couleur, font=police(8), anchor="w")
+    """Petit titre gris, au-dessus d'un bloc."""
+    return tk.Label(parent, text=espacer(texte), bg=fond, fg=couleur, font=police(10), anchor="w")
 
 
 def libelle(parent, texte="", taille=10, couleur=TEXTE, gras=False, fond=CARTE, largeur=None, **options):
     """Une ligne de texte. largeur = nombre de pixels avant de passer à la ligne."""
     return tk.Label(parent, text=texte, bg=fond, fg=couleur, font=police(taille, gras), anchor="w", justify="left",
                     wraplength=largeur or 0, **options)
+
+
+def led(parent, couleur, fond=CARTE, taille=8):
+    """La petite LED d'état (vert = ok, orange = à regarder, rouge = alerte). led.colorer(couleur) la change."""
+    c = tk.Canvas(parent, width=taille, height=taille, bg=fond, highlightthickness=0, bd=0)
+    rond = c.create_oval(0, 0, taille - 1, taille - 1, fill=couleur, outline="")
+    c.colorer = lambda nouvelle: c.itemconfig(rond, fill=nouvelle)
+    return c
 
 
 def vider(cadre):
@@ -1870,8 +2042,8 @@ def vider(cadre):
 def ligne_etat(parent, niveau, titre, detail="", bouton=None, action=None, fond=CARTE):
     """Une ligne « point de couleur + titre + explication (+ bouton) ». Sert aux bilans et aux listes À faire."""
     ligne = tk.Frame(parent, bg=fond)
-    ligne.pack(fill="x", pady=5)
-    tk.Label(ligne, text="●", bg=fond, fg=COULEUR_NIVEAU.get(niveau, GRIS), font=police(13)).pack(side="left", anchor="n", padx=(0, 10))
+    ligne.pack(fill="x", pady=6)
+    led(ligne, COULEUR_NIVEAU.get(niveau, GRIS), fond).pack(side="left", anchor="n", pady=(6, 0), padx=(0, 12))
     if bouton and action:
         Bouton(ligne, bouton, action, petit=True).pack(side="right", anchor="n", padx=(10, 0))
     textes = tk.Frame(ligne, bg=fond)
@@ -1895,18 +2067,20 @@ class Navigation:
         self.actuelle, self.quand_change = None, None
 
     def groupe(self, titre):
-        tk.Label(self.menu, text=espacer(titre), bg=MENU, fg=ETEINT, font=police(7, True), anchor="w").pack(
-            fill="x", padx=22, pady=(12, 2))
+        tk.Label(self.menu, text=titre, bg=MENU, fg=ETEINT, font=police(9), anchor="w").pack(
+            fill="x", padx=(23, 12), pady=(16, 4))
 
-    def add(self, cadre, icone, nom, aide, en_bas=False):
+    def add(self, cadre, nom_icone, nom, aide, en_bas=False):
         ligne = tk.Frame(self.menu, bg=MENU, cursor="hand2")
         ligne.pack(fill="x", side="bottom" if en_bas else "top")
         barre = tk.Frame(ligne, bg=MENU, width=3)
         barre.pack(side="left", fill="y")
-        tk.Label(ligne, text=icone, bg=MENU, fg=GRIS, font=police(10), width=3).pack(side="left", padx=(8, 0))
-        lbl = tk.Label(ligne, text=nom, bg=MENU, fg=GRIS, font=police(10), anchor="w", pady=6)
+        pic = tk.Label(ligne, image=icone(nom_icone, GRIS), bg=MENU, width=16)
+        pic.nom_icone = nom_icone
+        pic.pack(side="left", padx=(17, 12))
+        lbl = tk.Label(ligne, text=nom, bg=MENU, fg=GRIS, font=police(10), anchor="w", pady=7)
         lbl.pack(side="left", fill="x", expand=True)
-        compteur = tk.Label(ligne, text="", bg=MENU, fg=FOND, font=police(8, True))
+        compteur = tk.Label(ligne, text="", bg=MENU, fg=ORANGE, font=police(9))
         index = len(self.pages)
         for w in (ligne, lbl) + tuple(ligne.winfo_children()):
             w.bind("<Button-1>", lambda e, i=index: self.select(i))
@@ -1920,18 +2094,23 @@ class Navigation:
         if c is None:
             return
         if nombre:
-            c.config(text=f" {nombre} ", bg=couleur)
-            c.pack(side="right", padx=10)
+            c.config(text=f"●  {nombre}", fg=couleur)
+            c.pack(side="right", padx=(0, 14))
         else:
             c.pack_forget()
 
     def select(self, index):
         for i, (cadre, nom, ligne, barre, lbl) in enumerate(self.pages):
             actif = i == index
-            fond = melanger(MENU, ACCENT, 0.10) if actif else MENU
+            fond = SURFACE if actif else MENU
             for w in ligne.winfo_children():
-                if w is not barre and w is not self.compteurs[nom]:
-                    w.config(bg=fond, fg="white" if actif else GRIS)
+                if w is barre:
+                    continue
+                w.config(bg=fond)
+                if hasattr(w, "nom_icone"):
+                    w.config(image=icone(w.nom_icone, TEXTE if actif else GRIS))
+                elif w is not self.compteurs[nom]:
+                    w.config(fg=TEXTE if actif else GRIS)
             ligne.config(bg=fond)
             barre.config(bg=ACCENT if actif else MENU)
             if actif:
@@ -1954,6 +2133,12 @@ class Navigation:
 # =============================================================
 
 NOUVEAUTES = [
+    ("3.3.0", "Un design plus net", [
+        "Fonds gris graphite, et la couleur seulement là où elle veut dire quelque chose : CPU en cyan, GPU en rose, état en vert, orange ou rouge",
+        "Des pictos fins à la place des émojis, des titres écrits normalement (plus de MAJUSCULES espacées)",
+        "Plus de lueur autour des courbes et des barres, et plus de bandeau orange en haut : une petite LED dit si tout va bien",
+        "Les notifications s'affichent en haut à droite, sans cacher les cartes",
+    ]),
     ("3.2.0", "La mini-fenêtre te suit en jeu", [
         "Elle s'ouvre toute seule quand un jeu démarre et se range à la fin de la partie",
         "Elle affiche aussi la charge et la VRAM de la carte graphique, et la durée de ta partie",
@@ -2020,48 +2205,60 @@ class BoiteAOutils:
         menu = tk.Frame(racine, bg=MENU, width=214)
         menu.pack(side="left", fill="y")
         menu.pack_propagate(False)   # garde la largeur fixe
-        logo = tk.Canvas(menu, bg=MENU, height=70, highlightthickness=0)
-        logo.pack(fill="x", padx=(18, 0), pady=(16, 0))
-        gros = police(19, True)
-        logo.create_text(2, 4, text="⚡", fill=CYAN, anchor="nw", font=gros)
-        logo.create_text(34, 4, text="CRZ", fill=CYAN, anchor="nw", font=gros)
-        x, mesure, mot = 2, tk.font.Font(font=gros), "TOOLBOX"
-        for i, lettre in enumerate(mot):   # chaque lettre un peu plus violette : effet dégradé
-            logo.create_text(x, 38, text=lettre, fill=melanger(CYAN, VIOLET, i / (len(mot) - 1)), anchor="nw", font=gros)
-            x += mesure.measure(lettre) + 1
+        # Le logo : une petite LED cyan dans un carré, puis « Crz Toolbox »
+        logo = tk.Canvas(menu, bg=MENU, height=28, highlightthickness=0)
+        logo.pack(fill="x", padx=(20, 0), pady=(24, 12))
+        rectangle_arrondi(logo, 0, 1, 26, 27, 7, fill=SURFACE, outline=BORD)
+        logo.create_oval(9, 10, 17, 18, fill=CYAN, outline="")
+        gros = police(13, True)
+        logo.create_text(38, 14, text="Crz", fill=TEXTE, anchor="w", font=gros)
+        logo.create_text(38 + tk.font.Font(font=gros).measure("Crz "), 14, text="Toolbox", fill=GRIS, anchor="w", font=police(13))
         tk.Frame(racine, bg=BORD, width=1).pack(side="left", fill="y")   # trait de séparation
 
         # ----- Zone principale : en-tête + page -----
-        principale = tk.Frame(racine, bg=FOND, padx=24, pady=16)
+        principale = tk.Frame(racine, bg=FOND, padx=24, pady=20)
         principale.pack(side="left", fill="both", expand=True)
         entete = tk.Frame(principale, bg=FOND)
-        entete.pack(fill="x", pady=(0, 12))
+        entete.pack(fill="x", pady=(0, 16))
         haut = tk.Frame(entete, bg=FOND)   # 1re ligne : le titre à gauche, les boutons à droite
         haut.pack(fill="x")
         droite = tk.Frame(haut, bg=FOND)
         droite.pack(side="right", pady=(4, 0))
-        titre = tk.Label(haut, text="", bg=FOND, fg=TEXTE, font=police(20, True), anchor="w")
+        titre = tk.Label(haut, text="", bg=FOND, fg=TEXTE, font=police(18, True), anchor="w")
         titre.pack(side="left", fill="x", expand=True)
         sous_titre = tk.Label(entete, text="", bg=FOND, fg=GRIS, font=police(10), anchor="w")   # 2e ligne : l'explication
         sous_titre.pack(fill="x")
-        self.horloge = tk.Label(droite, text="", bg=FOND, fg=GRIS, font=police(10))
-        self.horloge.pack(side="right", padx=(12, 0))
-        self.pastille = tk.Label(droite, text="…", bg=FOND, fg=GRIS, font=police(10, True), padx=12, pady=4, cursor="hand2")
-        self.pastille.pack(side="right", padx=(8, 0))
-        self.pastille.bind("<Button-1>", lambda e: self.aller_a("Santé du PC", "Bilan"))
-        Bulle(self.pastille, "L'état général de ton PC. Clique pour voir le bilan complet.")
-        self.cloche = tk.Label(droite, text="🔔", bg=SURFACE, fg=GRIS, font=police(10, True), padx=10, pady=4, cursor="hand2")
+        self.horloge = tk.Label(droite, text="", bg=FOND, fg=ETEINT, font=police(9))
+        self.horloge.pack(side="right", padx=(16, 0))
+        # L'état général : une LED + quelques mots, sans bandeau de couleur
+        self.pastille = tk.Frame(droite, bg=FOND, cursor="hand2")
+        self.pastille.pack(side="right", padx=(16, 0))
+        self.led_etat = led(self.pastille, GRIS, FOND)
+        self.led_etat.pack(side="left", padx=(0, 8))
+        self.texte_etat = tk.Label(self.pastille, text="…", bg=FOND, fg=GRIS, font=police(9), cursor="hand2")
+        self.texte_etat.pack(side="left")
+        for w in (self.pastille, self.led_etat, self.texte_etat):
+            w.bind("<Button-1>", lambda e: self.aller_a("Santé du PC", "Bilan"))
+        Bulle(self.texte_etat, "L'état général de ton PC. Clique pour voir le bilan complet.")
+        self.cloche = tk.Label(droite, image=icone("bell", GRIS), compound="left", text="", bg=SURFACE, fg=GRIS,
+                               font=police(9, True), padx=9, pady=6, cursor="hand2", highlightthickness=1, highlightbackground=BORD)
         self.cloche.pack(side="right", padx=(8, 0))
         self.cloche.bind("<Button-1>", lambda e: self.basculer_notifs())
         Bulle(self.cloche, "Les dernières notifications")
-        recherche = tk.Label(droite, text="🔎  Rechercher   Ctrl+K", bg=SURFACE, fg=GRIS, font=police(9), padx=12, pady=5, cursor="hand2")
+        recherche = tk.Label(droite, image=icone("search", GRIS, 14), compound="left", text="  Rechercher            Ctrl+K",
+                             bg=SURFACE, fg=GRIS, font=police(9), padx=10, pady=6, cursor="hand2",
+                             highlightthickness=1, highlightbackground=BORD)
         recherche.pack(side="right", padx=(8, 0))
         recherche.bind("<Button-1>", lambda e: self.basculer_palette())
         self.bouton_maj_appli = Bouton(droite, "", self.lancer_maj_appli, "principal", petit=True)
         self.maj_horloge()
         zone = tk.Frame(principale, bg=FOND)
         zone.pack(fill="both", expand=True)
-        self.message_toast = tk.Label(racine, text="", bg=SURVOL, fg=TEXTE, font=police(10, True), padx=16, pady=8)
+        self.message_toast = tk.Frame(racine, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, padx=14, pady=10)
+        self.led_toast = led(self.message_toast, CYAN, SURFACE)
+        self.led_toast.pack(side="left", padx=(0, 10))
+        self.texte_toast = tk.Label(self.message_toast, text="", bg=SURFACE, fg=TEXTE, font=police(10))
+        self.texte_toast.pack(side="left")
 
         # ----- Les pages -----
         nav = self.navigation = Navigation(menu, zone, titre, sous_titre)
@@ -2073,17 +2270,17 @@ class BoiteAOutils:
             nav.add(cadre, icone, nom, aide, en_bas)
             constructeur(cadre)
 
-        page("⚙", "Réglages", "Tout se règle ici, sans toucher au code.", self.page_reglages, carte=False, en_bas=True)
+        page("settings", "Réglages", "Tout se règle ici, sans toucher au code", self.page_reglages, carte=False, en_bas=True)
         nav.groupe("Surveiller")
-        page("◉", "Accueil", "Ton PC en un coup d'œil, et ce qu'il y a à faire.", self.page_accueil, carte=False)
-        page("🩺", "Santé du PC", "Températures, ventilateurs, disques et mises à jour.", self.page_sante, carte=False)
-        page("📊", "Rapport", "Le résumé de ta semaine : temps de jeu, températures, ménage.", self.page_rapport)
+        page("layout-dashboard", "Accueil", "Ton PC en un coup d'œil, et ce qu'il y a à faire", self.page_accueil, carte=False)
+        page("activity", "Santé du PC", "Températures, ventilateurs, disques et mises à jour", self.page_sante, carte=False)
+        page("chart-column", "Rapport", "Le résumé de ta semaine : temps de jeu, températures, ménage", self.page_rapport)
         nav.groupe("Jouer")
-        page("🎮", "Jeux", "Lance une partie et retrouve ton temps de jeu.", self.page_jeux, carte=False)
-        page("🎛", "Profils", "Un clic pour passer le PC en mode Jeu, Travail ou Silence.", self.page_profils, carte=False)
+        page("gamepad-2", "Jeux", "Lance une partie et retrouve ton temps de jeu", self.page_jeux, carte=False)
+        page("sliders-horizontal", "Profils", "Un clic pour passer le PC en mode Jeu, Travail ou Silence", self.page_profils, carte=False)
         nav.groupe("Entretenir")
-        page("🧹", "Entretien", "Faire de la place, ranger tes fichiers, voir ce qui se lance au démarrage.", self.page_entretien, carte=False)
-        tk.Label(menu, text=f"v{VERSION}", bg=MENU, fg="#44445e", font=police(8)).pack(side="bottom", pady=(0, 6), before=nav.pages[0][2])
+        page("wrench", "Entretien", "Faire de la place, ranger tes fichiers, voir ce qui se lance au démarrage", self.page_entretien, carte=False)
+        tk.Label(menu, text=f"v{VERSION}", bg=MENU, fg=ETEINT, font=police(8), anchor="w").pack(side="bottom", fill="x", padx=23, pady=(4, 12), before=nav.pages[0][2])
         nav.quand_change = self.page_changee
         self.aller_a("Accueil")
 
@@ -2162,10 +2359,9 @@ class BoiteAOutils:
 
     def toast(self, texte, niveau="ok"):
         """Un petit message qui apparaît en bas de la fenêtre et s'efface tout seul."""
-        couleur = COULEUR_NIVEAU.get(niveau, VERT)
-        self.message_toast.config(text=texte, fg=couleur, bg=melanger(CARTE, couleur, 0.14),
-                                  highlightthickness=1, highlightbackground=melanger(CARTE, couleur, 0.5))
-        self.message_toast.place(relx=0.5, rely=1.0, y=-22, anchor="s")
+        self.led_toast.colorer(COULEUR_NIVEAU.get(niveau, VERT))
+        self.texte_toast.config(text=texte.rstrip(" !"))
+        self.message_toast.place(relx=1.0, x=-24, y=64, anchor="ne")   # en haut à droite, sous la cloche
         self.message_toast.lift()
         if getattr(self, "fin_toast", None):
             self.racine.after_cancel(self.fin_toast)
@@ -2207,11 +2403,12 @@ class BoiteAOutils:
         taches = self.taches_triees()
         importantes = [t for t in taches if t["niveau"] in ("alerte", "attention")]
         if not importantes:
-            texte, couleur = "✓  Tout va bien", VERT
+            texte, couleur = "Tout va bien", VERT
         else:
             couleur = ROUGE if importantes[0]["niveau"] == "alerte" else ORANGE
-            texte = "⚠  " + importantes[0]["texte"] + (f"  (+{len(importantes) - 1})" if len(importantes) > 1 else "")
-        self.pastille.config(text=texte[:46], fg=couleur, bg=melanger(FOND, couleur, 0.12))
+            texte = pluriel(f"{len(importantes)} point(s) à regarder", len(importantes))
+        self.led_etat.colorer(couleur)
+        self.texte_etat.config(text=texte, fg=TEXTE if couleur == ROUGE else GRIS)
         # Le même nombre partout : menu, carte « À faire » de l'accueil et bilan
         self.navigation.compter("Santé du PC", len(taches), couleur if importantes else CYAN)
         for redessiner in ("dessiner_a_faire", "dessiner_bilan"):
@@ -2243,9 +2440,9 @@ class BoiteAOutils:
 
     def dessiner_cloche(self):
         if self.non_lues:
-            self.cloche.config(text=f"🔔 {self.non_lues}", fg=FOND, bg=ORANGE)
+            self.cloche.config(text=f"  {self.non_lues}", fg=TEXTE, image=icone("bell", TEXTE))
         else:
-            self.cloche.config(text="🔔", fg=GRIS, bg=SURFACE)
+            self.cloche.config(text="", fg=GRIS, image=icone("bell", GRIS))
 
     def basculer_notifs(self):
         if any(nom == "notifs" for nom, _ in self.flottants):
@@ -2269,7 +2466,7 @@ class BoiteAOutils:
         for n in list(self.notifs)[:7]:
             ligne = tk.Frame(panneau, bg=CARTE, cursor="hand2" if n["action"] else "arrow")
             ligne.pack(fill="x", pady=4)
-            tk.Label(ligne, text="●", bg=CARTE, fg=COULEUR_NIVEAU.get(n["niveau"], CYAN), font=police(10)).pack(side="left", anchor="n", padx=(0, 8))
+            led(ligne, COULEUR_NIVEAU.get(n["niveau"], CYAN)).pack(side="left", anchor="n", pady=(6, 0), padx=(0, 10))
             tk.Label(ligne, text=n["heure"], bg=CARTE, fg=ETEINT, font=police(8)).pack(side="right", anchor="n")
             textes = tk.Frame(ligne, bg=CARTE)
             textes.pack(side="left", fill="x", expand=True)
@@ -2305,7 +2502,7 @@ class BoiteAOutils:
             ("Action : musique, morceau suivant", lambda: touche_media("suivant")),
         ]
         for nom, p in REGLAGES.get("profils", {}).items():
-            liste.append((f"Profil : {p.get('icone', '')} {nom}", lambda n=nom: self.activer_profil(n)))
+            liste.append((f"Profil : {nom}", lambda n=nom: self.activer_profil(n)))
         return liste
 
     def basculer_palette(self):
@@ -2315,7 +2512,7 @@ class BoiteAOutils:
         self.fermer_flottants()
         if self.racine.state() != "normal":
             return
-        panneau = tk.Frame(self.racine, bg=CARTE, highlightthickness=1, highlightbackground=ACCENT, padx=12, pady=12)
+        panneau = tk.Frame(self.racine, bg=CARTE, highlightthickness=1, highlightbackground=BORD, padx=12, pady=12)
         panneau.place(relx=0.5, y=64, anchor="n", width=540)
         panneau.lift()
         self.flottants.append(("palette", panneau))
@@ -2326,7 +2523,7 @@ class BoiteAOutils:
                            selectforeground="white", relief="flat", highlightthickness=0, font=police(11),
                            activestyle="none", exportselection=False)
         liste.pack(fill="x", pady=(8, 0))
-        libelle(panneau, "↑ ↓ pour choisir   ·   Entrée pour valider   ·   Échap pour fermer", 8, ETEINT).pack(fill="x", pady=(6, 0))
+        libelle(panneau, "Flèches pour choisir  ·  Entrée pour valider  ·  Échap pour fermer", 8, ETEINT).pack(fill="x", pady=(6, 0))
         toutes, visibles = self.commandes(), []
 
         def filtrer(_evt=None):
@@ -2597,7 +2794,7 @@ class BoiteAOutils:
         def ensuite(infos):
             if isinstance(infos, dict):
                 self.maj_dispo = infos
-                self.bouton_maj_appli.changer(f"⬇  Mise à jour v{infos['version']}")
+                self.bouton_maj_appli.changer(f"⬇ Mise à jour v{infos['version']}")
                 self.bouton_maj_appli.activer(True)
                 self.bouton_maj_appli.pack(side="right", padx=(8, 0))
                 if au_demarrage and REGLAGES.get("maj_auto", True) and not self.session:
@@ -2620,14 +2817,14 @@ class BoiteAOutils:
             if not messagebox.askyesno("Mise à jour", f"Installer la version {infos['version']} ?\n\n{notes}\n\n"
                                                       "La boîte à outils va redémarrer toute seule."):
                 return
-        self.bouton_maj_appli.changer("⏳  Installation...")
+        self.bouton_maj_appli.changer("⏳ Installation…")
         self.bouton_maj_appli.activer(False)
 
         def ensuite(erreur):
             if isinstance(erreur, Exception):
                 erreur = str(erreur)
             if erreur:
-                self.bouton_maj_appli.changer(f"⬇  Mise à jour v{infos['version']}")
+                self.bouton_maj_appli.changer(f"⬇ Mise à jour v{infos['version']}")
                 self.bouton_maj_appli.activer(True)
                 messagebox.showerror("Mise à jour", f"Mise à jour impossible : {erreur}\nTa version actuelle continue de marcher.")
                 return
@@ -2758,10 +2955,10 @@ def page_accueil(self, cadre):
 
     # ----- Ligne 2 : graphique + (À faire, actions rapides) -----
     ligne2 = tk.Frame(cadre, bg=FOND)
-    ligne2.pack(fill="both", expand=True, pady=10)
+    ligne2.pack(fill="both", expand=True, pady=(12, 0))
     ligne2.columnconfigure(0, weight=1)
     ligne2.rowconfigure(0, weight=1)
-    graph = Carte(ligne2, padx=14, pady=10)
+    graph = Carte(ligne2, padx=16, pady=14)
     graph.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
     tete = tk.Frame(graph, bg=CARTE)
     tete.pack(fill="x")
@@ -2769,92 +2966,96 @@ def page_accueil(self, cadre):
     self.periode = "10 min"
     self.boutons_periode = {}
     for nom in PERIODES:
-        b = tk.Label(tete, text=nom, bg=CARTE, fg=GRIS, font=police(8, True), padx=8, pady=2, cursor="hand2")
-        b.pack(side="left", padx=(8 if nom == "10 min" else 2, 0))
+        b = tk.Label(tete, text=nom, bg=CARTE, fg=GRIS, font=police(9), padx=8, pady=2, cursor="hand2")
+        b.pack(side="left", padx=(12 if nom == "10 min" else 2, 0))
         b.bind("<Button-1>", lambda e, n=nom: self.choisir_periode(n))
         self.boutons_periode[nom] = b
-    self.legende_alerte = tk.Label(tete, text="", bg=CARTE, fg=ORANGE, font=police(8, True))
+    self.legende_alerte = tk.Label(tete, text="", bg=CARTE, fg=GRIS, font=police(9))
     self.legende_alerte.pack(side="right")
-    tk.Label(tete, text="● GPU   ", bg=CARTE, fg=ROSE, font=police(8, True)).pack(side="right")
-    tk.Label(tete, text="● CPU   ", bg=CARTE, fg=CYAN, font=police(8, True)).pack(side="right")
+    for texte, couleur, tirets in (("Alerte", ORANGE, (3, 3)), ("GPU", ROSE, None), ("CPU", CYAN, None)):
+        if texte != "Alerte":
+            tk.Label(tete, text=texte, bg=CARTE, fg=GRIS, font=police(9)).pack(side="right", padx=(0, 16))
+        trait = tk.Canvas(tete, width=14, height=10, bg=CARTE, highlightthickness=0)
+        trait.create_line(0, 5, 14, 5, fill=couleur, width=2, dash=tirets)
+        trait.pack(side="right", padx=(0, 6))
     self.graphique = tk.Canvas(graph, bg=CARTE, height=150, width=1, highlightthickness=0)
-    self.graphique.pack(fill="both", expand=True, pady=(6, 0))
+    self.graphique.pack(fill="both", expand=True, pady=(12, 0))
     self.graphique.bind("<Configure>", lambda e: self.dessiner_graphique())
     self.charger_historique()
     self.choisir_periode("10 min")
 
-    droite = tk.Frame(ligne2, bg=FOND, width=326)
+    droite = tk.Frame(ligne2, bg=FOND, width=344)
     droite.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
     droite.pack_propagate(False)
-    a_faire = Carte(droite, padx=14, pady=10)
+    a_faire = Carte(droite, padx=16, pady=12)
     a_faire.pack(fill="both", expand=True)
     tete = tk.Frame(a_faire, bg=CARTE)
     tete.pack(fill="x")
     petit_titre(tete, "À faire").pack(side="left")
-    self.compteur_a_faire = tk.Label(tete, text="", bg=CARTE, fg=VERT, font=police(8, True))
+    self.compteur_a_faire = tk.Label(tete, text="", bg=CARTE, fg=ETEINT, font=police(9))
     self.compteur_a_faire.pack(side="right")
     self.cadre_a_faire = tk.Frame(a_faire, bg=CARTE)
     self.cadre_a_faire.pack(fill="both", expand=True, pady=(4, 0))
 
-    actions = Carte(droite, padx=12, pady=10)
-    actions.pack(fill="x", pady=(10, 0))
-    petit_titre(actions, "Actions rapides").pack(fill="x", pady=(0, 4))
+    actions = Carte(droite, padx=13, pady=12)
+    actions.pack(side="bottom", fill="x", pady=(12, 0), before=a_faire.exterieur)   # toujours en entier ; « À faire » prend le reste
+    petit_titre(actions, "Actions rapides").pack(fill="x", padx=3, pady=(0, 4))
     grille = tk.Frame(actions, bg=CARTE)
     grille.pack(fill="x")
     self.infos_actions = {}
-    for i, (cle, icone, titre, couleur, commande, aide) in enumerate((
-            ("jeu", "🎮", "Mode jeu", CYAN, self.mode_jeu, "Active le profil Jeu : plan Performances, ferme les applis choisies."),
-            ("micro", "🎙", "Micro", ROSE, self.basculer_micro, "Coupe ou réactive ton micro (celui choisi dans les Réglages)."),
-            ("profil", "🎛", "Profil", VIOLET, self.menu_profils, "Change de profil en un clic."),
-            ("mini", "▣", "Mini-fenêtre", VERT, self.basculer_mini, "Une petite fenêtre toujours visible avec les températures."),
-            ("ecrans", "🌙", "Écrans en veille", ORANGE, eteindre_ecrans, ""))):   # pas de bulle : le bouton dit déjà tout
+    for i, (cle, nom_ic, titre, couleur, commande, aide) in enumerate((
+            ("jeu", "gamepad-2", "Mode jeu", CYAN, self.mode_jeu, "Active le profil Jeu : plan Performances, ferme les applis choisies."),
+            ("micro", "mic", "Micro", ROSE, self.basculer_micro, "Coupe ou réactive ton micro (celui choisi dans les Réglages)."),
+            ("profil", "sliders-horizontal", "Profil", VIOLET, self.menu_profils, "Change de profil en un clic."),
+            ("mini", "picture-in-picture-2", "Mini-fenêtre", VERT, self.basculer_mini, "Une petite fenêtre toujours visible avec les températures."),
+            ("ecrans", "moon", "Écrans en veille", ORANGE, eteindre_ecrans, ""))):   # pas de bulle : le bouton dit déjà tout
         grille.columnconfigure(i % 2, weight=1, uniform="a")
-        self.infos_actions[cle] = self.action_rapide(grille, icone, titre, couleur, commande, i // 2, i % 2)
+        self.infos_actions[cle] = self.action_rapide(grille, nom_ic, titre, couleur, commande, i // 2, i % 2)
         if aide:
             Bulle(self.infos_actions[cle].master, aide)
     self.infos_actions["ecrans"].master.grid(columnspan=2)   # le 5e bouton prend toute la largeur
-    self.infos_actions["ecrans"].config(text="bouge la souris pour rallumer")
+    self.infos_actions["ecrans"].config(text="Bouge la souris pour rallumer")
 
     # ----- Ligne 3 : disques, jeu, musique -----
     ligne3 = tk.Frame(cadre, bg=FOND)
-    ligne3.pack(fill="x")
+    ligne3.pack(fill="x", pady=(12, 0))
     for col, poids in enumerate((6, 5, 6)):
         ligne3.columnconfigure(col, weight=poids, uniform="bas")
-    disques = Carte(ligne3, padx=14, pady=10)
+    disques = Carte(ligne3, padx=16, pady=14)
     disques.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
     tete = tk.Frame(disques, bg=CARTE)
     tete.pack(fill="x")
     petit_titre(tete, "Disques").pack(side="left")
-    self.dash_disques = tk.Label(tete, text="", bg=CARTE, fg=VERT, font=police(8, True))
+    self.dash_disques = tk.Label(tete, text="", bg=CARTE, fg=ETEINT, font=police(9))
     self.dash_disques.pack(side="right")
     self.cadre_dash_disques = tk.Frame(disques, bg=CARTE)
     self.cadre_dash_disques.pack(fill="x", pady=(4, 0))
     self.lignes_disques = {}
 
-    jeu = Carte(ligne3, padx=14, pady=10)
+    jeu = Carte(ligne3, padx=16, pady=14)
     jeu.grid(row=0, column=1, sticky="nsew", padx=5)
     petit_titre(jeu, "Jeu").pack(fill="x")
-    self.dash_jeu = tk.Label(jeu, text="Aucun jeu", bg=CARTE, fg=GRIS, font=police(14, True), anchor="w")
+    self.dash_jeu = tk.Label(jeu, text="Aucune partie en cours", bg=CARTE, fg=GRIS, font=police(13), anchor="w")
     self.dash_jeu.pack(fill="x", pady=(4, 2))
-    self.dash_semaine = tk.Label(jeu, text="", bg=CARTE, fg=GRIS, font=police(9), anchor="w")
+    self.dash_semaine = tk.Label(jeu, text="", bg=CARTE, fg=ETEINT, font=police(9), anchor="w")
     self.dash_semaine.pack(fill="x")
-    self.dash_top = tk.Label(jeu, text="", bg=CARTE, fg=GRIS, font=police(9), anchor="w")
+    self.dash_top = tk.Label(jeu, text="", bg=CARTE, fg=ETEINT, font=police(9), anchor="w")
     self.dash_top.pack(fill="x")
 
-    musique = Carte(ligne3, padx=14, pady=10)
+    musique = Carte(ligne3, padx=16, pady=14)
     musique.grid(row=0, column=2, sticky="nsew", padx=(5, 0))
     petit_titre(musique, "Musique · Spotify").pack(fill="x")
-    self.dash_musique = tk.Label(musique, text="Rien en lecture", bg=CARTE, fg=GRIS, font=police(11, True), anchor="w")
+    self.dash_musique = tk.Label(musique, text="Rien en lecture", bg=CARTE, fg=GRIS, font=police(11), anchor="w")
     self.dash_musique.pack(fill="x", pady=(4, 0))
-    self.dash_artiste = tk.Label(musique, text="", bg=CARTE, fg=GRIS, font=police(9), anchor="w")
+    self.dash_artiste = tk.Label(musique, text="", bg=CARTE, fg=ETEINT, font=police(9), anchor="w")
     self.dash_artiste.pack(fill="x")
     boutons = tk.Frame(musique, bg=CARTE)
-    boutons.pack(fill="x", pady=(6, 0))
-    for col, (symbole, action, aide) in enumerate((("⏮", "precedent", "Morceau précédent"), ("⏯", "playpause", "Lecture / pause"),
-                                                   ("⏭", "suivant", "Morceau suivant"), ("🔉", "volmoins", "Baisser le volume"),
-                                                   ("🔊", "volplus", "Monter le volume"))):
+    boutons.pack(fill="x", pady=(8, 0))
+    for col, (symbole, action, aide) in enumerate((("skip-back", "precedent", "Morceau précédent"), ("play", "playpause", "Lecture / pause"),
+                                                   ("skip-forward", "suivant", "Morceau suivant"), ("volume-1", "volmoins", "Baisser le volume"),
+                                                   ("volume-2", "volplus", "Monter le volume"))):
         boutons.columnconfigure(col, weight=1, uniform="m")
-        b = tk.Label(boutons, text=symbole, bg=SURFACE, fg=CYAN, font=police(10), cursor="hand2", pady=3)
+        b = tk.Label(boutons, image=icone(symbole, GRIS, 14), bg=SURFACE, cursor="hand2", pady=6)
         b.grid(row=0, column=col, sticky="ew", padx=2)
         b.bind("<Button-1>", lambda e, a=action: touche_media(a))
         b.bind("<Enter>", lambda e, w=b: w.config(bg=SURVOL))
@@ -2880,20 +3081,20 @@ def page_accueil(self, cadre):
 @methode
 def tuile(self, parent, titre, couleur):
     """Une tuile de mesure : titre + état, grosse valeur + unité, détail, jauge."""
-    c = Carte(parent, padx=14, pady=10)
+    c = Carte(parent, padx=16, pady=12)
     petit_titre(c, titre).pack(fill="x")
     ligne = tk.Frame(c, bg=CARTE)
     ligne.pack(fill="x", pady=(2, 0))
-    valeur = tk.Label(ligne, text="--", bg=CARTE, fg=couleur, font=police(26, True))
+    valeur = tk.Label(ligne, text="--", bg=CARTE, fg=couleur, font=police(26))
     valeur.pack(side="left")
-    unite = tk.Label(ligne, text="", bg=CARTE, fg=GRIS, font=police(11, True))
+    unite = tk.Label(ligne, text="", bg=CARTE, fg=GRIS, font=police(11))
     unite.pack(side="left", anchor="s", pady=(0, 8), padx=(2, 0))
-    etat = tk.Label(ligne, text="", bg=CARTE, fg=VERT, font=police(8, True))   # NORMAL, CHAUD, BRÛLANT...
+    etat = tk.Label(ligne, text="", bg=CARTE, fg=VERT, font=police(9))   # Normal, Chaud, Brûlant...
     etat.pack(side="right", anchor="s", pady=(0, 10))
-    detail = tk.Label(c, text="", bg=CARTE, fg=GRIS, font=police(9), anchor="w")
+    detail = tk.Label(c, text="", bg=CARTE, fg=ETEINT, font=police(9), anchor="w")
     detail.pack(fill="x")
     jauge = Jauge(c, couleur)
-    jauge.pack(fill="x", pady=(6, 0))
+    jauge.pack(fill="x", pady=(8, 0))
     return c, {"etat": etat, "valeur": valeur, "unite": unite, "detail": detail, "jauge": jauge, "couleur": couleur}
 
 
@@ -2907,21 +3108,21 @@ def remplir_tuile(self, t, valeur, unite, detail, fraction, etat, couleur_etat, 
 
 
 @methode
-def action_rapide(self, parent, icone, titre, couleur, commande, rangee, colonne):
-    """Un bouton carré : icône colorée + titre, et une petite ligne d'état dessous. Renvoie le label de l'état."""
-    b = tk.Frame(parent, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, cursor="hand2", padx=9, pady=6)
-    b.grid(row=rangee, column=colonne, sticky="nsew", padx=3, pady=3)
+def action_rapide(self, parent, nom_icone, titre, couleur, commande, rangee, colonne):
+    """Un bouton : picto + titre, et une petite ligne d'état dessous. Renvoie le label de l'état."""
+    b = tk.Frame(parent, bg=SURFACE, cursor="hand2", padx=12, pady=5)
+    b.grid(row=rangee, column=colonne, sticky="nsew", padx=3, pady=2)
     haut = tk.Frame(b, bg=SURFACE)
     haut.pack(fill="x")
-    ic = tk.Label(haut, text=icone, bg=melanger(SURFACE, couleur, 0.25), fg=TEXTE, font=police(10), width=2)
+    ic = tk.Label(haut, image=icone(nom_icone, GRIS), bg=SURFACE)
     ic.pack(side="left")
     nom = tk.Label(haut, text=titre, bg=SURFACE, fg=TEXTE, font=police(10, True))
-    nom.pack(side="left", padx=(8, 0))
-    info = tk.Label(b, text="", bg=SURFACE, fg=GRIS, font=police(8), anchor="w")
-    info.pack(fill="x", pady=(3, 0))
+    nom.pack(side="left", padx=(10, 0))
+    info = tk.Label(b, text="", bg=SURFACE, fg=ETEINT, font=police(9), anchor="w")
+    info.pack(fill="x", padx=(26, 0))
 
     def teinte(fond):
-        for w in (b, haut, nom, info):
+        for w in (b, haut, ic, nom, info):
             w.config(bg=fond)
     for w in (b, haut, ic, nom, info):
         w.bind("<Button-1>", lambda e: commande())
@@ -2937,16 +3138,16 @@ def maj_actions_rapides(self):
     if not infos:
         return
     actif = REGLAGES.get("profil_actif")
-    infos["jeu"].config(text="activé ✓" if actif == "Jeu" else "activer le profil Jeu", fg=VERT if actif == "Jeu" else GRIS)
-    infos["profil"].config(text=f"{actif or 'aucun'}  ▾")
-    infos["mini"].config(text="affichée · cacher" if self.mini else "cachée · afficher", fg=VERT if self.mini else GRIS)
+    infos["jeu"].config(text="Activé" if actif == "Jeu" else "Profil Jeu", fg=VERT if actif == "Jeu" else ETEINT)
+    infos["profil"].config(text=f"{actif or 'Aucun'}  ▾")
+    infos["mini"].config(text="Affichée" if self.mini else "Cachée", fg=VERT if self.mini else ETEINT)
     coupe = getattr(self, "micro_coupe", None)
     if coupe is None:
-        infos["micro"].config(text="état inconnu", fg=GRIS)
+        infos["micro"].config(text="État inconnu", fg=ETEINT)
     elif coupe:
-        infos["micro"].config(text="COUPÉ · réactiver", fg=ROUGE)
+        infos["micro"].config(text="Coupé · réactiver", fg=ROUGE)
     else:
-        infos["micro"].config(text="actif · couper", fg=VERT)
+        infos["micro"].config(text="Actif", fg=VERT)
 
 
 @methode
@@ -2962,7 +3163,7 @@ def menu_profils(self, evt=None):
     menu = tk.Menu(self.racine, tearoff=0, bg=CARTE, fg=TEXTE, activebackground=ACCENT, activeforeground=FOND)
     for nom, p in REGLAGES.get("profils", {}).items():
         coche = "✓ " if nom == REGLAGES.get("profil_actif") else "    "
-        menu.add_command(label=f"{coche}{p.get('icone', '')} {nom}", command=lambda n=nom: self.activer_profil(n))
+        menu.add_command(label=f"{coche}{nom}", command=lambda n=nom: self.activer_profil(n))
     menu.add_separator()
     menu.add_command(label="Modifier les profils…", command=lambda: self.aller_a("Profils"))
     x, y = self.racine.winfo_pointerxy()
@@ -2976,23 +3177,23 @@ def dessiner_a_faire(self):
     taches = self.taches_triees()
     importantes = [t for t in taches if t["niveau"] in ("alerte", "attention")]
     if not taches:
-        self.compteur_a_faire.config(text=espacer("rien"), fg=VERT)
-        libelle(self.cadre_a_faire, "✓  Rien à faire", 13, VERT, True).pack(fill="x", pady=(14, 2))
+        self.compteur_a_faire.config(text="Rien", fg=ETEINT)
+        libelle(self.cadre_a_faire, "Rien à faire", 13, VERT).pack(fill="x", pady=(12, 4))
         libelle(self.cadre_a_faire, "Ton PC est en forme. Si quelque chose demande ton attention "
                                     "(mise à jour, disque plein, surchauffe...), ça s'affichera ici.", 9, GRIS,
                 largeur=280).pack(fill="x")
         return
     couleur = ROUGE if any(t["niveau"] == "alerte" for t in taches) else (ORANGE if importantes else CYAN)
-    self.compteur_a_faire.config(text=espacer(f"{len(taches)} point" + ("s" if len(taches) > 1 else "")), fg=couleur)
+    self.compteur_a_faire.config(text=pluriel(f"{len(taches)} point(s)", len(taches)), fg=ETEINT)
     for t in taches[:3]:
         ligne = tk.Frame(self.cadre_a_faire, bg=CARTE)
         ligne.pack(fill="x", pady=4)
-        tk.Label(ligne, text="●", bg=CARTE, fg=COULEUR_NIVEAU.get(t["niveau"], CYAN), font=police(11)).pack(side="left", anchor="n", padx=(0, 8))
+        led(ligne, COULEUR_NIVEAU.get(t["niveau"], CYAN)).pack(side="left", anchor="n", pady=(6, 0), padx=(0, 10))
         if t["action"]:
-            Bouton(ligne, t["bouton"], t["action"], petit=True).pack(side="right", anchor="n", padx=(6, 0))
-        libelle(ligne, t["texte"], 9, TEXTE, True, largeur=190).pack(side="left", fill="x", expand=True, anchor="n")
+            Bouton(ligne, t["bouton"], t["action"], petit=True).pack(side="right", anchor="n", padx=(8, 0))
+        libelle(ligne, t["texte"], 10, TEXTE, largeur=240).pack(side="left", fill="x", expand=True, anchor="n")
     if len(taches) > 3:
-        plus = tk.Label(self.cadre_a_faire, text=pluriel(f"+ {len(taches) - 3} autre(s) dans le bilan  ›", len(taches) - 3), bg=CARTE, fg=ACCENT,
+        plus = tk.Label(self.cadre_a_faire, text=pluriel(f"{len(taches) - 3} autre(s) dans le bilan  ›", len(taches) - 3), bg=CARTE, fg=ACCENT,
                         font=police(9), cursor="hand2", anchor="w")
         plus.pack(fill="x", pady=(2, 0))
         plus.bind("<Button-1>", lambda e: self.aller_a("Santé du PC", "Bilan"))
@@ -3083,7 +3284,7 @@ def maj_mesures(self):
                 down, up = vitesse
                 self.max_down = max(self.max_down, down)
                 self.remplir_tuile(t["net"], f"{down:.1f}".replace(".", ",") if down < 10 else f"{down:.0f}",
-                                   "Mbit/s ↓", f"↑ {up:.1f} Mbit/s envoi".replace(".", ","),
+                                   "Mbit/s reçus", f"{up:.1f} Mbit/s envoyés".replace(".", ","),
                                    down / max(self.max_down, 50), "Active" if down + up > 0.2 else "Calme", VERT, couleur_jauge=VERT)
             elif m.get("reseau") is None:
                 self.remplir_tuile(t["net"], "--", "Mbit/s", "mesure impossible", 0, "?", GRIS, GRIS)
@@ -3166,15 +3367,15 @@ def maj_disques_dash(self):
                     tk.Label(l, text=f"{lettre}:", bg=CARTE, fg=TEXTE, font=police(9, True), width=3, anchor="w").pack(side="left")
                     texte = tk.Label(l, text="", bg=CARTE, fg=GRIS, font=police(9), width=17, anchor="e")
                     texte.pack(side="right")
-                    barre = Jauge(l, CYAN, epaisseur=5)
+                    barre = Jauge(l, CYAN, epaisseur=4)
                     barre.pack(side="left", fill="x", expand=True, padx=(2, 8))
                     self.lignes_disques[lettre] = (barre, texte)
                 barre, texte = self.lignes_disques[lettre]
                 rempli = 1 - libre / total if total else 0
                 temp = temps.get(lettre)
-                couleur = ROUGE if rempli > 0.97 or (temp or 0) >= 70 else (ORANGE if rempli >= seuil or (temp or 0) >= 60 else CYAN)
-                a_surveiller += couleur != CYAN
-                texte.config(text=f"{libre / 1e9:,.0f} Go libres".replace(",", " ") + (f" · {temp:.0f}°" if temp else ""))
+                couleur = ROUGE if rempli > 0.97 or (temp or 0) >= 70 else (ORANGE if rempli >= seuil or (temp or 0) >= 60 else NEUTRE)
+                a_surveiller += couleur != NEUTRE
+                texte.config(text=f"{libre / 1e9:,.0f} Go libres".replace(",", " ") + (f" · {temp:.0f} °C" if temp else ""))
                 barre.regler(rempli, couleur)
                 if rempli >= seuil:
                     self.tache(f"disque {lettre}", "attention", f"Disque {lettre}: presque plein",
@@ -3191,7 +3392,7 @@ def maj_disques_dash(self):
             self.lecteurs = lecteurs
             if lecteurs and not getattr(self, "sante_disques_connue", False):
                 ok = len(lecteurs) - a_surveiller
-                self.dash_disques.config(text=espacer(f"{ok} / {len(lecteurs)} OK"), fg=VERT if not a_surveiller else ORANGE)
+                self.dash_disques.config(text=f"{ok} sur {len(lecteurs)} en bon état", fg=ETEINT if not a_surveiller else ORANGE)
         finally:   # même si une mesure plante, la boucle continue (l'erreur part dans le journal)
             self.racine.after(30000, self.maj_disques_dash)
     self.en_fond(lecteurs_fixes, ensuite)
@@ -3242,7 +3443,7 @@ def ajouter_historique(self, cpu, gpu):
 def choisir_periode(self, nom):
     self.periode = nom
     for n, b in self.boutons_periode.items():
-        b.config(bg=melanger(CARTE, ACCENT, 0.18) if n == nom else CARTE, fg=ACCENT if n == nom else GRIS)
+        b.config(bg=SURFACE if n == nom else CARTE, fg=TEXTE if n == nom else GRIS)
     self.dessiner_graphique()
 
 
@@ -3263,13 +3464,13 @@ def dessiner_graphique(self):
         return gauche + (instant - (maintenant - duree)) / duree * (droite - gauche)
 
     for t in (20, 40, 60, 80, 100):   # lignes repères
-        c.create_line(gauche, y(t), droite, y(t), fill="#16162a")
-        c.create_text(gauche - 6, y(t), text=f"{t}°", fill=GRIS, anchor="e", font=police(8))
-    c.create_line(gauche, y(ALERTE_GPU), droite, y(ALERTE_GPU), fill=melanger(CARTE, ORANGE, 0.6), dash=(4, 4))
-    self.legende_alerte.config(text=f"┄ alerte {ALERTE_GPU}°")
+        c.create_line(gauche, y(t), droite, y(t), fill="#1c1f23")
+        c.create_text(gauche - 8, y(t), text=f"{t}°", fill=ETEINT, anchor="e", font=police(8))
+    c.create_line(gauche, y(ALERTE_GPU), droite, y(ALERTE_GPU), fill=melanger(CARTE, ORANGE, 0.5), dash=(4, 4))
+    self.legende_alerte.config(text=f"Alerte {ALERTE_GPU} °C")
     debut, milieu = {"10 min": ("-10 min", "-5 min"), "1 h": ("-1 h", "-30 min"), "24 h": ("-24 h", "-12 h")}[self.periode]
     for texte, px, ancre in ((debut, gauche, "w"), (milieu, (gauche + droite) / 2, "center"), ("maintenant", droite, "e")):
-        c.create_text(px, haut - 6, text=texte, fill=GRIS, anchor=ancre, font=police(8))
+        c.create_text(px, haut - 6, text=texte, fill=ETEINT, anchor=ancre, font=police(8))
     points = [p for p in self.histo[self.periode] if p[0] >= maintenant - duree]
     for indice, couleur in ((1, CYAN), (2, ROSE)):
         morceaux, trace, avant = [], [], None
@@ -3284,14 +3485,11 @@ def dessiner_graphique(self):
         morceaux.append(trace)
         for pts in morceaux:
             if len(pts) >= 4:
-                for largeur, force in ((12, 0.06), (8, 0.13), (5, 0.25)):
-                    c.create_line(pts, fill=melanger(CARTE, couleur, force), width=largeur, smooth=True,
-                                  capstyle="round", joinstyle="round", splinesteps=24)
-                c.create_line(pts, fill=couleur, width=2.5, smooth=True, capstyle="round", splinesteps=24)
+                c.create_line(pts, fill=couleur, width=2, smooth=True, capstyle="round", splinesteps=24)
         dernier = next((p for p in reversed(points) if p[indice] is not None), None)
         if dernier and maintenant - dernier[0] < pas * 4:   # un point sur la valeur actuelle
             px, py = x(dernier[0]), y(dernier[indice])
-            c.create_oval(px - 4, py - 4, px + 4, py + 4, fill=couleur, outline="")
+            c.create_oval(px - 4, py - 4, px + 4, py + 4, fill=couleur, outline=CARTE, width=2)
     if len(points) < 2:
         c.create_text((gauche + droite) / 2, (bas + 8) / 2, fill=ETEINT, font=police(9),
                       text="Les courbes se dessinent au fur et à mesure" if self.periode == "10 min"
@@ -3465,12 +3663,12 @@ def page_sante(self, cadre):
                                ("diagnostic", "La boîte à outils elle-même", "Diagnostic")):
         ligne = tk.Frame(self.cadre_bilan, bg=CARTE)
         ligne.pack(fill="x", pady=6)
-        point = tk.Label(ligne, text="●", bg=CARTE, fg=GRIS, font=police(15))
-        point.pack(side="left", padx=(0, 12))
+        point = led(ligne, GRIS, taille=10)
+        point.pack(side="left", anchor="n", pady=(7, 0), padx=(0, 14))
         Bouton(ligne, "Voir  ›", lambda o=onglet: onglets.choisir(o), petit=True).pack(side="right")
         textes = tk.Frame(ligne, bg=CARTE)
         textes.pack(side="left", fill="x", expand=True)
-        libelle(textes, titre, 11, TEXTE, True).pack(fill="x")
+        libelle(textes, titre, 11, TEXTE).pack(fill="x")
         detail = libelle(textes, "Vérification...", 9, GRIS, largeur=640)
         detail.pack(fill="x")
         self.lignes_bilan[cle] = (point, detail)
@@ -3624,14 +3822,14 @@ def dessiner_bilan(self):
                            " ".join(x[1] for x in (a, p) if x))
     for cle, (point, detail) in self.lignes_bilan.items():
         niveau, phrase = etats.get(cle, ("inconnu", "Vérification..."))
-        point.config(fg=COULEUR_NIVEAU.get(niveau, GRIS))
+        point.colorer(COULEUR_NIVEAU.get(niveau, GRIS))
         detail.config(text=phrase)
     total = len(self.taches)   # le même nombre que dans le menu et sur l'accueil
     niveaux = {t["niveau"] for t in self.taches.values()}
     if total == 0:
-        self.titre_bilan.config(text="✓  Ton PC est en forme", fg=VERT)
+        self.titre_bilan.config(text="Ton PC est en forme", fg=VERT)
     elif niveaux <= {"info"}:   # que des petites choses (une appli à mettre à jour...)
-        self.titre_bilan.config(text=pluriel(f"✓  Ton PC est en forme · {total} petite(s) chose(s) à faire, rien d'urgent", total), fg=CYAN)
+        self.titre_bilan.config(text=pluriel(f"Ton PC est en forme · {total} petite(s) chose(s) à faire, rien d'urgent", total), fg=TEXTE)
     else:
         self.titre_bilan.config(text=pluriel(f"{total} point(s) à regarder", total), fg=ROUGE if "alerte" in niveaux else ORANGE)
     # Les autres points « À faire » qui ne rentrent dans aucune ligne
@@ -3809,7 +4007,7 @@ def verifier_maj(self):
 def lancer_maj(self):
     choisies = [self.applis_maj[i] for i in self.liste_maj.curselection()]
     if not choisies:
-        self.info_maj.config(text="Sélectionne d'abord une ou plusieurs applis dans la liste 👇", fg=ORANGE)
+        self.info_maj.config(text="Sélectionne d'abord une ou plusieurs applis dans la liste", fg=ORANGE)
         return
     noms = ", ".join(a["nom"] for a in choisies)
     if not messagebox.askyesno("Mises à jour", f"Mettre à jour : {noms} ?\n\n"
@@ -3864,8 +4062,9 @@ def verifier_disques(self):
     libelle(self.cadre_disques, "Analyse...", 10, GRIS).pack(anchor="w")
 
     def puce(parent, texte, couleur):
-        tk.Label(parent, text=texte, bg=melanger(SURFACE, couleur, 0.14), fg=couleur, font=police(9, True),
-                 padx=8, pady=2).pack(side="left", padx=(0, 6))
+        # une info en texte calme ; la couleur seulement si c'est un souci
+        tk.Label(parent, text=texte, bg=SURFACE, fg=couleur if couleur in (ROUGE, ORANGE) else GRIS,
+                 font=police(9)).pack(side="left", padx=(0, 16))
 
     def ensuite(disques):
         vider(self.cadre_disques)
@@ -3884,8 +4083,8 @@ def verifier_disques(self):
             bloc.pack(fill="x", pady=4)
             haut = tk.Frame(bloc, bg=SURFACE)
             haut.pack(fill="x")
-            tk.Label(haut, text="●", bg=SURFACE, fg=couleur, font=police(12)).pack(side="left", padx=(0, 8))
-            libelle(haut, d["nom"], 11, TEXTE, True, SURFACE).pack(side="left")
+            led(haut, couleur, SURFACE).pack(side="left", padx=(0, 10))
+            libelle(haut, d["nom"], 11, TEXTE, fond=SURFACE).pack(side="left")
             libelle(haut, f"   {d['type']} · {d['taille'] / 1e9:.0f} Go", 9, GRIS, fond=SURFACE).pack(side="left")
             puces = tk.Frame(bloc, bg=SURFACE)
             puces.pack(fill="x", pady=(6, 0))
@@ -3906,7 +4105,7 @@ def verifier_disques(self):
                 valeur, unite = d["ecrit"]
                 puce(puces, f"{valeur:,.0f} {unite} écrits".replace(",", " "), GRIS)
         self.sante_disques_connue = True
-        self.dash_disques.config(text=espacer(f"{nb_ok} / {len(disques)} OK"), fg=VERT if nb_ok == len(disques) else ROUGE)
+        self.dash_disques.config(text=f"{nb_ok} sur {len(disques)} en bon état", fg=ETEINT if nb_ok == len(disques) else ROUGE)
         if soucis:
             self.etats["disques"] = ("alerte", f"Problème sur : {', '.join(soucis)}. Sauvegarde tes fichiers.")
         else:
@@ -3927,7 +4126,7 @@ def verifier_disques(self):
             rempli = 1 - libre / total if total else 0
             j = Jauge(ligne, CYAN, epaisseur=6)
             j.pack(side="left", fill="x", expand=True, padx=8)
-            j.regler(rempli, ROUGE if rempli > 0.97 else (ORANGE if rempli >= int(REGLAGES.get("alerte_disque", 90)) / 100 else CYAN))
+            j.regler(rempli, ROUGE if rempli > 0.97 else (ORANGE if rempli >= int(REGLAGES.get("alerte_disque", 90)) / 100 else NEUTRE))
         self.dessiner_bilan()
     self.en_fond(etat_disques, ensuite)
 
@@ -4026,7 +4225,7 @@ def page_jeux(self, cadre):
     libelle(session, "Choisis un jeu à gauche, puis lance la session. Voilà ce qui se passe :", 9, GRIS, largeur=280).pack(fill="x", pady=(2, 8))
     self.cadre_etapes = tk.Frame(session, bg=CARTE)
     self.cadre_etapes.pack(fill="x")
-    self.btn_lancer = Bouton(session, "🚀 Lancer la session", self.lancer, "succes")
+    self.btn_lancer = Bouton(session, "🚀 Lancer la session", self.lancer, "principal")
     self.btn_lancer.pack(fill="x", pady=(12, 4))
     self.btn_fini = Bouton(session, "✅ J'ai fini de jouer", self.fin_session)
     self.btn_fini.pack(fill="x")
@@ -4158,7 +4357,7 @@ def lancer(self):
         self.session = session
         fermees = ", ".join(session["applis"]) or "aucune"
         perf = "mode Performances activé" if session["plan"] else "plan d'alimentation inchangé"
-        self.info_gaming.config(text=f"🚀 {jeu} se lance. Applis fermées : {fermees}. {perf.capitalize()}. Bon jeu !", fg=TEXTE)
+        self.info_gaming.config(text=f"{jeu} se lance. Applis fermées : {fermees}. {perf.capitalize()}. Bon jeu", fg=TEXTE)
         self.btn_fini.activer(True)
     self.en_fond(travail, ensuite)
 
@@ -4174,7 +4373,7 @@ def fin_session(self):
         activer_plan(self.session["plan"])   # on remet ton plan d'avant
     self.session = None
     try:
-        self.info_gaming.config(text="👍 Tout est remis comme avant (applis et plan d'alimentation).", fg=GRIS)
+        self.info_gaming.config(text="Tout est remis comme avant (applis et plan d'alimentation).", fg=GRIS)
         self.btn_fini.activer(False)
         self.btn_lancer.activer(True)
     except tk.TclError:
@@ -4276,10 +4475,10 @@ def afficher_sessions(self):
 @methode
 def afficher_temps(self):
     if self.jeu_actuel:
-        self.info_jeu_actuel.config(text=f"🎮 En ce moment : {self.jeu_actuel} "
+        self.info_jeu_actuel.config(text=f"En ce moment : {self.jeu_actuel} "
                                          f"(depuis {duree_lisible(time.time() - self.debut_jeu)})", fg=VERT)
     else:
-        self.info_jeu_actuel.config(text="💤 Aucun jeu lancé", fg=GRIS)
+        self.info_jeu_actuel.config(text="Aucun jeu lancé", fg=GRIS)
 
     # Les 7 derniers jours, du plus ancien au plus récent
     jours = [time.strftime("%Y-%m-%d", time.localtime(time.time() - i * 86400)) for i in range(6, -1, -1)]
@@ -4296,7 +4495,7 @@ def afficher_temps(self):
     if self.jeu_actuel:
         self.dash_jeu.config(text=f"{self.jeu_actuel} · {duree_lisible(time.time() - self.debut_jeu)}"[:26], fg=CYAN)
     else:
-        self.dash_jeu.config(text="Aucun jeu", fg=GRIS)
+        self.dash_jeu.config(text="Aucune partie en cours", fg=GRIS)
     self.dash_semaine.config(text=f"7 derniers jours : {duree_lisible(sum(par_jour))}")
     self.dash_top.config(text=f"Le plus joué : {max(par_jeu, key=par_jeu.get)}" if par_jeu else "")
 
@@ -4306,15 +4505,14 @@ def afficher_temps(self):
     larg = max(c.winfo_width(), 300)
     classement = sorted(par_jeu.items(), key=lambda j: j[1], reverse=True)[:5]
     if not classement:
-        c.create_text(larg / 2, 85, text="Pas encore de partie enregistrée cette semaine. Lance un jeu !", fill=GRIS, font=police(10))
+        c.create_text(larg / 2, 85, text="Pas encore de partie enregistrée cette semaine", fill=GRIS, font=police(10))
     plus_long = max([sec for _, sec in classement], default=1)
-    couleurs = [CYAN, ROSE, VIOLET, VERT, ORANGE]
     for i, (jeu, sec) in enumerate(classement):
         y = 12 + i * 31
         c.create_text(4, y + 9, text=jeu[:24], fill=TEXTE, anchor="w", font=police(10))
         fin = 200 + (larg - 300) * sec / plus_long
-        c.create_line(200, y + 9, larg - 100, y + 9, fill="#1c1c2c", width=12, capstyle="round")
-        c.create_line(200, y + 9, max(fin, 201), y + 9, fill=couleurs[i], width=12, capstyle="round")
+        c.create_line(200, y + 9, larg - 100, y + 9, fill=PISTE, width=6, capstyle="round")
+        c.create_line(200, y + 9, max(fin, 201), y + 9, fill=ACCENT if i == 0 else NEUTRE, width=6, capstyle="round")   # le plus joué en couleur
         c.create_text(larg - 84, y + 9, text=duree_lisible(sec), fill=GRIS, anchor="w", font=police(9))
 
     # Graphique 2 : une colonne par jour
@@ -4327,8 +4525,8 @@ def afficher_temps(self):
     for i, (jour, sec) in enumerate(zip(jours, par_jour)):
         x = 10 + i * pas
         haut = (130 - 46) * sec / plus_long
-        c.create_rectangle(x + pas * 0.25, 106 - max(haut, 2), x + pas * 0.75, 106, fill=VIOLET if i < 6 else CYAN, width=0)
-        c.create_text(x + pas / 2, 119, text=noms_jours[time.strptime(jour, "%Y-%m-%d").tm_wday], fill=GRIS, font=police(9))
+        c.create_rectangle(x + pas * 0.25, 106 - max(haut, 2), x + pas * 0.75, 106, fill=NEUTRE if i < 6 else ACCENT, width=0)   # aujourd'hui en couleur
+        c.create_text(x + pas / 2, 119, text=noms_jours[time.strptime(jour, "%Y-%m-%d").tm_wday], fill=ETEINT, font=police(9))
         if sec >= 60:
             c.create_text(x + pas / 2, 97 - haut, text=duree_lisible(sec), fill=TEXTE, font=police(8))
 
@@ -4364,7 +4562,7 @@ def page_profils(self, cadre):
     for col, titre in enumerate(["", "Alimentation", "Applis à fermer", "Applis à ouvrir"]):
         petit_titre(grille, titre).grid(row=0, column=col, sticky="w", padx=4, pady=(0, 4))
     for rangee, (nom, p) in enumerate(REGLAGES["profils"].items(), start=1):
-        libelle(grille, f"{p.get('icone', '')}  {nom}", 10, TEXTE, True).grid(row=rangee, column=0, sticky="w", padx=(4, 12), pady=4)
+        libelle(grille, nom, 10, TEXTE, True).grid(row=rangee, column=0, sticky="w", padx=(4, 12), pady=4)
         plan = ttk.Combobox(grille, values=list(NOMS_PLANS.values()), state="readonly", width=20)
         plan.set(NOMS_PLANS.get(p.get("plan"), "Utilisation normale"))
         plan.grid(row=rangee, column=1, padx=4)
@@ -4390,9 +4588,9 @@ def dessiner_profils(self):
         c.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 4, 0 if col == dernier else 4))
         haut = tk.Frame(c, bg=CARTE)
         haut.pack(fill="x")
-        libelle(haut, f"{p.get('icone', '')}  {nom}", 16, couleur, True).pack(side="left")
+        libelle(haut, nom, 16, couleur).pack(side="left")
         if nom == actif:
-            tk.Label(haut, text=espacer("actif"), bg=CARTE, fg=couleur, font=police(8, True)).pack(side="right")
+            tk.Label(haut, text="Actif", bg=CARTE, fg=couleur, font=police(9)).pack(side="right")
         resume = ["Alimentation : " + NOMS_PLANS.get(p.get("plan"), "inchangée")]
         if p.get("fermer"):
             resume.append("Ferme " + ", ".join(a.replace(".exe", "") for a in p["fermer"]))
@@ -4506,7 +4704,7 @@ def page_entretien(self, cadre):
     self.construire_zones()
     boutons = tk.Frame(nettoyer, bg=CARTE)
     boutons.pack(fill="x", pady=(8, 0))
-    Bouton(boutons, "🔍 Analyser", self.analyser, "principal").pack(side="left", padx=(0, 8))
+    Bouton(boutons, "🔍 Analyser", self.analyser).pack(side="left", padx=(0, 8))
     self.btn_nettoyer = Bouton(boutons, "🧹 Nettoyer", self.nettoyer, "succes")
     self.btn_nettoyer.pack(side="left")
     self.btn_nettoyer.activer(False)
@@ -4528,7 +4726,7 @@ def page_entretien(self, cadre):
     lien.bind("<Button-1>", lambda e: self.aller_a("Réglages", "Général"))
     boutons = tk.Frame(ranger_, bg=CARTE)
     boutons.pack(fill="x", pady=10)
-    Bouton(boutons, "🔍 Aperçu", self.voir_apercu, "principal").pack(side="left", padx=(0, 8))
+    Bouton(boutons, "🔍 Aperçu", self.voir_apercu).pack(side="left", padx=(0, 8))
     self.btn_ranger = Bouton(boutons, "📂 Ranger", self.lancer_rangement, "succes")
     self.btn_ranger.pack(side="left")
     self.btn_ranger.activer(False)
@@ -4622,7 +4820,7 @@ def analyser(self):
 def nettoyer(self):
     choisies = [z for z in self.zones if z["var"].get()]
     if not choisies:
-        self.resultat_nettoyage.config(text="Coche au moins une case 👆", fg=ORANGE)
+        self.resultat_nettoyage.config(text="Coche au moins une case", fg=ORANGE)
         return
     liste = "\n".join(f"• {z['nom'].split(' (')[0]} : {taille_lisible(z['taille'])}" for z in choisies)
     if not messagebox.askyesno("Nettoyer", f"Je nettoie :\n\n{liste}\n\nOn y va ?"):
@@ -4653,7 +4851,7 @@ def nettoyer(self):
         enregistrer_reglages()
         self.afficher_dernier_nettoyage()
         self.analyser()
-        self.racine.after(1500, lambda: self.resultat_nettoyage.config(text=f"✓ {taille_lisible(libere)} libérés !", fg=VERT))
+        self.racine.after(1500, lambda: self.resultat_nettoyage.config(text=f"✓ {taille_lisible(libere)} libérés", fg=VERT))
         self.toast(f"{taille_lisible(libere)} libérés")
     self.en_fond(travail, ensuite)
 
@@ -4665,7 +4863,7 @@ def voir_apercu(self):
         self.apercu.config(text=f"Le dossier {DOSSIER_A_RANGER} n'existe pas. Change-le dans les Réglages.", fg=ORANGE)
         self.btn_ranger.activer(False)
     elif not self.plan:
-        self.apercu.config(text="Rien à ranger, c'est déjà propre ✨", fg=VERT)
+        self.apercu.config(text="Rien à ranger, c'est déjà propre", fg=VERT)
         self.btn_ranger.activer(False)
     else:
         lignes = [pluriel(f"{cat} : {len(liste)} fichier(s)", len(liste)) for cat, liste in sorted(self.plan.items())]
@@ -4678,7 +4876,7 @@ def lancer_rangement(self):
     total = sum(len(l) for l in self.plan.values())
     if total and messagebox.askyesno("Ranger", f"Ranger ces {total} fichiers dans des sous-dossiers de\n{DOSSIER_A_RANGER} ?"):
         n = ranger(self.plan)
-        self.apercu.config(text=pluriel(f"✓ {n} fichier(s) rangé(s) !", n), fg=VERT)
+        self.apercu.config(text=pluriel(f"✓ {n} fichier(s) rangé(s)", n), fg=VERT)
         self.btn_ranger.activer(False)
 
 
@@ -4743,7 +4941,7 @@ def page_rapport(self, cadre):
     self.choix_semaine = -1
     self.boutons_semaine = {}
     for valeur, nom in ((0, "Cette semaine"), (-1, "Semaine dernière")):
-        b = tk.Label(haut, text=nom, bg=CARTE, fg=GRIS, font=police(9, True), padx=10, pady=4, cursor="hand2")
+        b = tk.Label(haut, text=nom, bg=CARTE, fg=GRIS, font=police(9), padx=10, pady=4, cursor="hand2")
         b.pack(side="right", padx=(6, 0))
         b.bind("<Button-1>", lambda e, v=valeur: self.choisir_semaine(v))
         self.boutons_semaine[valeur] = b
@@ -4766,7 +4964,7 @@ def page_rapport(self, cadre):
 def choisir_semaine(self, decalage):
     self.choix_semaine = decalage
     for v, b in self.boutons_semaine.items():
-        b.config(bg=melanger(CARTE, ACCENT, 0.18) if v == decalage else CARTE, fg=ACCENT if v == decalage else GRIS)
+        b.config(bg=SURFACE if v == decalage else CARTE, fg=TEXTE if v == decalage else GRIS)
     self.afficher_rapport()
 
 
@@ -4796,11 +4994,11 @@ def afficher_rapport(self):
     ]
     for col, (titre, valeur, detail, couleur) in enumerate(cases):
         grille.columnconfigure(col, weight=1, uniform="r")
-        c = tk.Frame(grille, bg=SURFACE, highlightthickness=1, highlightbackground=BORD, padx=12, pady=10)
+        c = tk.Frame(grille, bg=SURFACE, padx=14, pady=12)
         c.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 4, 4))
-        libelle(c, titre.upper(), 7, GRIS, True, SURFACE, largeur=140).pack(fill="x")
-        libelle(c, valeur, 20, couleur, True, SURFACE).pack(fill="x")
-        libelle(c, detail, 9, GRIS, fond=SURFACE, largeur=150).pack(fill="x")
+        libelle(c, titre, 9, GRIS, fond=SURFACE, largeur=140).pack(fill="x")
+        libelle(c, valeur, 20, couleur, fond=SURFACE).pack(fill="x", pady=(4, 0))
+        libelle(c, detail, 9, ETEINT, fond=SURFACE, largeur=150).pack(fill="x")
 
     bas = tk.Frame(self.cadre_rapport, bg=CARTE)
     bas.pack(fill="both", expand=True, pady=(14, 0))
@@ -4814,8 +5012,8 @@ def afficher_rapport(self):
     for rang, (jeu, sec) in enumerate(b["top"], start=1):
         ligne = tk.Frame(gauche, bg=CARTE)
         ligne.pack(fill="x", pady=3)
-        tk.Label(ligne, text=str(rang), bg=melanger(CARTE, [CYAN, ROSE, VIOLET][rang - 1], 0.25), fg=TEXTE, font=police(10, True), width=3).pack(side="left")
-        libelle(ligne, jeu, 11, TEXTE, True).pack(side="left", padx=10)
+        tk.Label(ligne, text=str(rang), bg=CARTE, fg=ETEINT, font=police(10), width=2, anchor="w").pack(side="left")
+        libelle(ligne, jeu, 11, TEXTE).pack(side="left", padx=(4, 10))
         libelle(ligne, duree_lisible(sec), 10, GRIS).pack(side="right")
     semaine = set(b["jours"])
     parties = [s for s in getattr(self, "sessions", []) if time.strftime("%Y-%m-%d", time.localtime(s.get("debut", 0))) in semaine]
@@ -4833,11 +5031,12 @@ def afficher_rapport(self):
     def dessiner(_evt=None):
         toile.delete("all")
         larg, plus_long = max(toile.winfo_width(), 280), max(par_jour + [3600])
+        record = max(range(7), key=lambda i: par_jour[i]) if any(par_jour) else -1   # le jour le plus joué ressort
         pas = (larg - 10) / 7
         for i, sec in enumerate(par_jour):
             x, haut = 5 + i * pas, 96 * sec / plus_long
-            toile.create_rectangle(x + pas * 0.22, 122 - max(haut, 2), x + pas * 0.78, 122, fill=VIOLET if sec else "#1c1c2c", width=0)
-            toile.create_text(x + pas / 2, 136, text=["lun", "mar", "mer", "jeu", "ven", "sam", "dim"][i], fill=GRIS, font=police(9))
+            toile.create_rectangle(x + pas * 0.22, 122 - max(haut, 2), x + pas * 0.78, 122, fill=(ACCENT if i == record else NEUTRE) if sec else PISTE, width=0)
+            toile.create_text(x + pas / 2, 136, text=["lun", "mar", "mer", "jeu", "ven", "sam", "dim"][i], fill=ETEINT, font=police(9))
             if sec >= 60:
                 toile.create_text(x + pas / 2, 113 - haut, text=duree_lisible(sec), fill=TEXTE, font=police(8))
     toile.bind("<Configure>", dessiner)
@@ -4865,7 +5064,8 @@ def onglet_stream_deck(self, sd):
                                  ("Musique", "Lecture / pause, morceau suivant ou précédent, volume de la musique.", ORANGE)):
         ligne = tk.Frame(sd, bg=CARTE)
         ligne.pack(fill="x", pady=3)
-        tk.Label(ligne, text=nom, bg=melanger(CARTE, couleur, 0.18), fg=couleur, font=police(10, True), width=10, pady=3).pack(side="left", padx=(0, 12))
+        led(ligne, couleur).pack(side="left", padx=(0, 10))
+        tk.Label(ligne, text=nom, bg=CARTE, fg=TEXTE, font=police(10, True), width=9, anchor="w").pack(side="left", padx=(0, 8))
         libelle(ligne, detail, 10, TEXTE, largeur=720).pack(side="left", fill="x")
     libelle(sd, "Dans le logiciel Stream Deck, ces touches sont dans la catégorie « Capteurs de Crz » (colonne de droite) : "
                 "glisse-les sur ton Stream Deck. Le profil « Perfs » est livré avec le plugin.", 9, GRIS, largeur=860).pack(fill="x", pady=(10, 0))
