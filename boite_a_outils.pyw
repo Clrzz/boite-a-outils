@@ -61,7 +61,7 @@ APPDATA = os.environ.get("APPDATA", "")
 DOSSIER_APPLI = Path.home() / "BoiteAOutils"
 FICHIER_REGLAGES = DOSSIER_APPLI / "reglages.json"
 
-VERSION = "3.3.0"
+VERSION = "3.3.1"
 # Les mises à jour sont publiées ici (dépôt GitHub public de Crz)
 DEPOT_MAJ = "https://raw.githubusercontent.com/Clrzz/boite-a-outils/main/"
 
@@ -2790,14 +2790,19 @@ class BoiteAOutils:
     # ---------- mises à jour de la boîte à outils ----------
 
     def verifier_maj_appli(self, au_demarrage=False, a_la_main=False):
-        """Regarde s'il y a une nouvelle version (au démarrage puis toutes les 6 h)."""
+        """Regarde s'il y a une nouvelle version (au démarrage puis toutes les heures)."""
         def ensuite(infos):
             if isinstance(infos, dict):
                 self.maj_dispo = infos
                 self.bouton_maj_appli.changer(f"⬇ Mise à jour v{infos['version']}")
                 self.bouton_maj_appli.activer(True)
                 self.bouton_maj_appli.pack(side="right", padx=(8, 0))
-                if au_demarrage and REGLAGES.get("maj_auto", True) and not self.session:
+                # Installée toute seule au démarrage, ou quand la boîte est rangée près de l'horloge
+                # (fenêtre cachée) et qu'aucun jeu ne tourne : plus besoin de la quitter pour l'avoir.
+                cachee = self.racine.state() in ("withdrawn", "iconic")
+                if (REGLAGES.get("maj_auto", True) and not self.session and not getattr(self, "jeu_actuel", None)
+                        and (au_demarrage or cachee)):
+                    journal(f"Mise à jour v{infos['version']} installée toute seule ({'démarrage' if au_demarrage else 'fenêtre rangée'})")
                     self.lancer_maj_appli(sans_question=True)
                 else:
                     self.tache("maj_appli", "info", f"Version {infos['version']} de la boîte à outils disponible",
@@ -2805,7 +2810,7 @@ class BoiteAOutils:
             elif a_la_main:
                 self.toast(f"Tu as déjà la dernière version (v{VERSION})")
             if not a_la_main:
-                self.racine.after(6 * 3600 * 1000, self.verifier_maj_appli)
+                self.racine.after(3600 * 1000, self.verifier_maj_appli)   # toutes les heures
         self.en_fond(chercher_maj, ensuite)
 
     def lancer_maj_appli(self, sans_question=False):

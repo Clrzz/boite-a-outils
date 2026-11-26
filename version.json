@@ -1,6 +1,6 @@
 {
-  "version": "3.3.0",
+  "version": "3.3.1",
   "plugin": "1.4.7",
-  "notes": "Nouveau design plus net : fonds gris graphite, couleurs néon gardées pour les mesures, pictos fins à la place des émojis, plus de lueurs ni de bandeau orange, notifications en haut à droite.",
-  "sha256": "91ec2869d4f497c038f4854aa25c3bddbce566ad053405ae8a7edb8368a29ba7"
+  "notes": "Les mises à jour s'installent toutes seules quand la boîte à outils est rangée près de l'horloge et que tu ne joues pas. Vérification toutes les heures.",
+  "sha256": "e8b3bf17c97e748061d9ab0c7898b16f9c64f90d7ddf5cd65cdde343de5bc009"
 }
