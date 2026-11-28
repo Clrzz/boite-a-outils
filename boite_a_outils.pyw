@@ -80,6 +80,7 @@ REGLAGES_DEFAUT = {
     # --- nouveautés de la v3 ---
     "notifications": True,       # petites alertes Windows (surchauffe, disque plein, fin de partie...)
     "alerte_disque": 90,         # % de remplissage à partir duquel un disque est signalé
+    "seuil_place": 10,           # Go récupérables à partir desquels « Tu peux libérer… » apparaît dans À faire
     "auto_profil": False,        # changer de profil tout seul quand un jeu démarre / s'arrête
     "profil_en_jeu": "Jeu",
     "accent": "Cyan",            # couleur des boutons : Cyan, Rose, Violet ou Vert
@@ -3079,6 +3080,7 @@ def page_accueil(self, cadre):
     self.dessiner_a_faire()
     self.racine.after(500, self.maj_mesures)
     self.racine.after(800, self.maj_disques_dash)
+    self.racine.after(90 * 1000, self.verifier_place_liberable)
     self.racine.after(1500, self.suivre_musique)
     self.racine.after(5 * 60 * 1000, self.sauver_historique_regulierement)
 
@@ -3546,6 +3548,44 @@ def basculer_micro(self):
         self.afficher_micro()
         self.toast("Micro coupé" if coupe else "Micro réactivé", "alerte" if coupe else "ok")
     self.en_fond(lambda: micro("basculer"), ensuite)
+
+
+# ---------- place libérable (une fois par jour) ----------
+
+def mesurer_place_liberable():
+    """Ce que le nettoyage pourrait récupérer, zone par zone (sans rien supprimer).
+    Les mises à jour Windows sont laissées de côté : il faut l'accès administrateur pour les lire."""
+    tailles = {}
+    for zone in zones_nettoyage():
+        if zone["cle"] == "maj":
+            continue
+        try:
+            if zone["cle"] == "medal":
+                tailles[zone["nom"]] = sum(c.stat().st_size for c in vieux_clips())
+            else:
+                tailles[zone["nom"]] = sum(taille_dossier(d) for d in zone["dossiers"] if d.exists())
+        except OSError:
+            pass
+    return tailles
+
+
+@methode
+def verifier_place_liberable(self):
+    def ensuite(tailles):
+        try:
+            if isinstance(tailles, Exception) or not tailles:
+                return
+            total = sum(tailles.values())
+            if total >= float(REGLAGES.get("seuil_place", 10)) * 1024 ** 3:
+                gros = sorted(tailles.items(), key=lambda z: -z[1])[:2]
+                detail = " · ".join(f"{nom.split(' (')[0]} : {taille_lisible(t)}" for nom, t in gros if t)
+                self.tache("place", "info", f"Tu peux libérer {taille_lisible(total)}", detail, "Nettoyer",
+                           lambda: (self.aller_a("Entretien", "Nettoyer"), self.analyser()))
+            else:
+                self.tache_finie("place")
+        finally:   # on remesure une fois par jour
+            self.racine.after(24 * 3600 * 1000, self.verifier_place_liberable)
+    self.en_fond(mesurer_place_liberable, ensuite)
 
 
 # =============================================================
@@ -5177,6 +5217,8 @@ def page_reglages(self, cadre):
     ligne(alertes, "alerte_cpu", "nombre", "Alerte température du processeur (°C)", "Ton i5-13600KF supporte jusqu'à 100 °C. Conseillé : 90.")
     ligne(alertes, "alerte_gpu", "nombre", "Alerte température de la carte graphique (°C)", "Conseillé pour ta RTX 4070 Ti : 83.")
     ligne(alertes, "alerte_disque", "nombre", "Signaler un disque rempli à plus de (%)", "Un SSD trop plein ralentit. Conseillé : 90.")
+    ligne(alertes, "seuil_place", "nombre", "Proposer un nettoyage à partir de (Go)",
+          "Une fois par jour, je mesure ce qui peut être nettoyé (fichiers temporaires, caches, vieux clips). Rien n'est supprimé sans ton accord.")
     libelle(alertes, "Une alerte ne part que si le souci dure une dizaine de secondes, et jamais deux fois de suite pour la même chose.",
             9, GRIS, largeur=860).pack(fill="x", pady=(10, 0))
 
@@ -5238,7 +5280,7 @@ def page_reglages(self, cadre):
 @methode
 def sauver_reglages(self):
     nouveaux = {}
-    limites = {"alerte_cpu": (50, 105), "alerte_gpu": (50, 100), "alerte_disque": (50, 99)}
+    limites = {"alerte_cpu": (50, 105), "alerte_gpu": (50, 100), "alerte_disque": (50, 99), "seuil_place": (1, 500)}
     for cle, (sorte, w) in self.champs_reglages.items():
         if sorte == "oui_non":
             nouveaux[cle] = w.get()
